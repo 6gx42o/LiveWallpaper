@@ -199,7 +199,8 @@ struct MemoryView: View {
                             if let icon = usage.app.icon { Image(nsImage: icon).resizable().frame(width: 22, height: 22) }
                             Text(usage.name)
                             Spacer()
-                            Text(SystemInfo.bytes(usage.bytes)).monospacedDigit().foregroundStyle(.secondary)
+                            Text(usage.bytes > 0 ? SystemInfo.bytes(usage.bytes) : "—").monospacedDigit().foregroundStyle(.secondary)
+                                .help(usage.bytes > 0 ? "" : "macOS doesn't let apps measure this one's memory")
                         }
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(cleaner.selected.contains(usage.id) ? Color.accentColor.opacity(0.1) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
