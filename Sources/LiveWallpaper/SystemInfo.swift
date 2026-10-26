@@ -74,14 +74,20 @@ enum SystemInfo {
             let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? CGMainDisplayID()
             let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
             let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
-            // macOS flags the panel's true native mode; scaled "More Space" modes can be larger, so don't just take the biggest.
-            let nativeFlag: UInt32 = 0x0200_0000 // kDisplayModeNativeFlag
-            let best = modes.filter { $0.ioFlags & nativeFlag != 0 }.max { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }
-                ?? modes.max { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }
-            let native = best.map { CGSize(width: $0.pixelWidth, height: $0.pixelHeight) }
+            let native = nativeSize(modes.map { ($0.pixelWidth, $0.pixelHeight, $0.ioFlags) })
                 ?? CGSize(width: screen.frame.width * screen.backingScaleFactor, height: screen.frame.height * screen.backingScaleFactor)
             return Screen(name: screen.localizedName, native: native)
         }
+    }
+
+    /// Picks the panel's native resolution from a display's modes (pixel width, height, IOKit flags).
+    /// macOS flags the true native mode; scaled "More Space" modes can be larger, so the biggest mode isn't trusted
+    /// unless nothing is flagged (some external monitors), in which case the largest is the best guess.
+    static func nativeSize(_ modes: [(width: Int, height: Int, flags: UInt32)]) -> CGSize? {
+        let nativeFlag: UInt32 = 0x0200_0000 // kDisplayModeNativeFlag
+        let bigger = { (a: (width: Int, height: Int, flags: UInt32), b: (width: Int, height: Int, flags: UInt32)) in a.width * a.height < b.width * b.height }
+        let best = modes.filter { $0.flags & nativeFlag != 0 }.max(by: bigger) ?? modes.max(by: bigger)
+        return best.map { CGSize(width: $0.width, height: $0.height) }
     }
 
     /// The largest connected display's native resolution.
