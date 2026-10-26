@@ -128,8 +128,10 @@ final class Library {
             return nil
         }
         if !isMovie {
-            let kind = UTType(filenameExtension: ext)?.localizedDescription ?? (ext.isEmpty ? "file without an extension" : ".\(ext) file")
-            return ImportFailure(title: "“\(file)” isn't compatible", reason: "It's a \(kind), not a video. " + Self.supportedFormats)
+            let what = ext.isEmpty
+                ? "This file has no extension and isn't a video."
+                : "This is a .\(ext) file" + (UTType(filenameExtension: ext)?.localizedDescription.map { " (\($0))" } ?? "") + ", not a video."
+            return ImportFailure(title: "“\(file)” isn't compatible", reason: what + " " + Self.supportedFormats)
         }
         return nil
     }
