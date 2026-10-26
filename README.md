@@ -84,3 +84,7 @@ Sources/LiveWallpaper/
 Resources/AppIcon.icns   app icon (regenerate with scripts/make-icon.swift)
 build.sh                 builds LiveWallpaper.app
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
