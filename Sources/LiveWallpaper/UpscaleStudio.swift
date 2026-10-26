@@ -153,7 +153,7 @@ struct UpscaleView: View {
                     }
                     .labelsHidden().frame(maxWidth: 360)
                 }
-                Text(target.width > info.size.width
+                Text(verbatim: target.width > info.size.width
                      ? "Will upscale \(info.resolutionText) → \(Int(target.width))×\(Int(target.height)) (\(String(format: "%.1f", target.width / info.size.width))×), enough to fill \(Int(studio.resolution.size.width))×\(Int(studio.resolution.size.height))."
                      : "Already \(info.resolutionText) — sharp enough for \(Int(studio.resolution.size.width))×\(Int(studio.resolution.size.height)); nothing to upscale.")
                     .font(.caption).foregroundStyle(.secondary)
