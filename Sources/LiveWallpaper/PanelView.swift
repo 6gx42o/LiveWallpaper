@@ -36,6 +36,8 @@ struct PanelView: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .onDrop(of: [.fileURL], delegate: VideoDropDelegate(model: model))
 
             Divider()
 
@@ -116,18 +118,23 @@ struct PanelView: View {
             }
             .controlSize(isWindow ? .large : .regular)
 
+            // The window takes drag & drop; the panel closes as soon as you click another app.
+            if isWindow || lib.videos.isEmpty {
+                DropZone(
+                    isLarge: lib.videos.isEmpty,
+                    acceptsDrops: isWindow,
+                    isTargeted: model.isDropTargeted,
+                    add: model.addVideos
+                )
+            }
             if let converting = lib.converting {
                 ConvertingCard(name: converting.name, fraction: converting.fraction)
             }
             ForEach(lib.failures) { failure in
-                BrokenCard(title: "“\(failure.name)” is broken", reason: failure.reason) {
-                    model.library.dismissFailure(failure)
-                }
+                BrokenCard(failure: failure) { model.library.dismissFailure(failure) }
             }
 
-            if lib.videos.isEmpty {
-                if lib.converting == nil { EmptyLibrary(isLarge: isWindow, add: model.addVideos) }
-            } else {
+            if !lib.videos.isEmpty {
                 let columns = isWindow
                     ? [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 18)]
                     : [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
@@ -293,16 +300,25 @@ private struct ConvertingCard: View {
 }
 
 private struct BrokenCard: View {
-    let title: String
-    let reason: String
+    let failure: Library.ImportFailure
     let dismiss: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.caption.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                Text(reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(failure.title).font(.caption.weight(.semibold)).lineLimit(2).truncationMode(.middle)
+                Text(failure.reason).font(.caption).fixedSize(horizontal: false, vertical: true)
+                if let details = failure.details {
+                    Text(details)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                Button("Copy details", action: copy)
+                    .buttonStyle(.link)
+                    .font(.caption)
             }
             Spacer(minLength: 4)
             Button(action: dismiss) { Image(systemName: "xmark").font(.caption) }
@@ -313,28 +329,85 @@ private struct BrokenCard: View {
         .padding(10)
         .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
+
+    private func copy() {
+        let text = [failure.title, failure.reason, failure.details].compactMap { $0 }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 }
 
-private struct EmptyLibrary: View {
-    var isLarge = false
+/// Click to choose videos; in the window, also a drag & drop target that lights up while hovered.
+private struct DropZone: View {
+    let isLarge: Bool
+    let acceptsDrops: Bool
+    let isTargeted: Bool
     let add: () -> Void
+
+    private var title: String {
+        isTargeted ? "Release to add" : acceptsDrops ? "Drop videos here" : "Add a video to get started"
+    }
+    private var subtitle: String {
+        acceptsDrops
+            ? "or click to choose — any video is converted automatically"
+            : "Click to choose a file. Open the window to drag & drop."
+    }
 
     var body: some View {
         Button(action: add) {
-            VStack(spacing: 6) {
-                Image(systemName: "film.stack").font(isLarge ? .largeTitle : .title2).foregroundStyle(.secondary)
-                Text("Add a video to get started")
-                Text("Any format — it's converted automatically.").font(.caption).foregroundStyle(.secondary)
+            Group {
+                if isLarge {
+                    VStack(spacing: 6) {
+                        icon.font(acceptsDrops ? .largeTitle : .title2)
+                        Text(title)
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }
+                    .padding(.vertical, acceptsDrops ? 80 : 22)
+                    .padding(.horizontal, 12)
+                } else {
+                    HStack(spacing: 10) {
+                        icon.font(.title3)
+                        Text(title)
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
+                }
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, isLarge ? 80 : 22)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-                    .foregroundStyle(.tertiary)
+                    .fill(isTargeted ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: [6]))
+                    .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(acceptsDrops ? "Drop videos here, or click to choose" : "Add a video")
+    }
+
+    private var icon: some View {
+        Image(systemName: isTargeted ? "arrow.down.circle.fill" : "square.and.arrow.down.on.square")
+            .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+    }
+}
+
+/// Accepts files dragged onto the window and hands them to the library.
+private struct VideoDropDelegate: DropDelegate {
+    let model: AppModel
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.fileURL]) }
+    func dropEntered(info: DropInfo) { model.isDropTargeted = true }
+    func dropExited(info: DropInfo) { model.isDropTargeted = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        model.isDropTargeted = false
+        model.importDropped(info.itemProviders(for: [.fileURL]))
+        return true
     }
 }

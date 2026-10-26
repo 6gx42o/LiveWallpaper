@@ -10,6 +10,8 @@ final class AppModel: ObservableObject {
     let gate = PlaybackGate()
     let library = Library()
     var openWindow: (() -> Void)?
+    /// True while files are being dragged over a drop area (highlights it).
+    var isDropTargeted = false { didSet { objectWillChange.send() } }
     private var windows: [WallpaperWindow] = []
     private let log = Logger(subsystem: "LiveWallpaper", category: "app")
 
@@ -59,10 +61,20 @@ final class AppModel: ObservableObject {
     func addVideos() {
         NSApp.activate()
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.movie]
+        panel.allowedContentTypes = [.movie] + Library.ffmpegExtensions.compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = true
         panel.message = "Choose videos to use as wallpapers. Any format is converted automatically."
         if panel.runModal() == .OK { library.add(panel.urls) }
+    }
+
+    /// Imports files dropped on a drop area; incompatible ones are reported by the library.
+    func importDropped(_ providers: [NSItemProvider]) {
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in self.library.add([url]) }
+            }
+        }
     }
 
     var launchAtLogin: Bool {

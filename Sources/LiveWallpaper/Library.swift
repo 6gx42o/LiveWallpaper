@@ -1,14 +1,28 @@
 import AppKit
 import AVFoundation
+import UniformTypeIdentifiers
 import os
 
 /// Imported videos are converted to muted HEVC .mp4 (hardware-decoded, capped near screen size)
 /// and stored in Application Support, where they become selectable wallpapers.
 @MainActor
 final class Library {
-    struct Failure: LocalizedError { let errorDescription: String? }
-    /// An import that couldn't be converted, shown to the user until dismissed.
-    struct ImportFailure: Identifiable { let id = UUID(); let name: String; let reason: String }
+    /// Why an import failed, written for the user: a headline, a plain reason, and the technical
+    /// detail (error text, ffmpeg output) to help diagnose it. Shown until dismissed.
+    struct ImportFailure: Error, Identifiable {
+        let id = UUID()
+        let title: String
+        let reason: String
+        var details: String?
+    }
+
+    static let supportedFormats = "MP4, MOV and M4V work out of the box. With ffmpeg installed: WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP."
+    /// Formats macOS can't decode itself but ffmpeg can.
+    static let ffmpegExtensions: Set<String> = ["webm", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "ogv", "3gp", "vob"]
+    /// Looked up each time, so installing ffmpeg works without restarting the app.
+    static var ffmpegPath: String? {
+        ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].first(where: FileManager.default.isExecutableFile(atPath:))
+    }
 
     let dir: URL
     private(set) var videos: [URL] = []
@@ -91,10 +105,45 @@ final class Library {
         (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
     }
 
+    /// Rejects anything that can't be a video before spending time converting it.
+    private func compatibilityProblem(_ src: URL) -> ImportFailure? {
+        let file = src.lastPathComponent
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: src.path, isDirectory: &isDirectory) else {
+            return ImportFailure(title: "“\(file)” wasn't found", reason: "The file may have been moved or deleted.", details: src.path)
+        }
+        if isDirectory.boolValue {
+            return ImportFailure(title: "“\(file)” is a folder", reason: "Drop the video files themselves, not a folder. " + Self.supportedFormats)
+        }
+        let ext = src.pathExtension.lowercased()
+        let isMovie = UTType(filenameExtension: ext)?.conforms(to: .movie) ?? false
+        if Self.ffmpegExtensions.contains(ext) {
+            if Self.ffmpegPath == nil {
+                return ImportFailure(
+                    title: "“\(file)” isn't compatible yet",
+                    reason: "macOS can't play .\(ext) files on its own. Install ffmpeg (brew install ffmpeg) and add it again — it will then be converted automatically.",
+                    details: Self.supportedFormats
+                )
+            }
+            return nil
+        }
+        if !isMovie {
+            let kind = UTType(filenameExtension: ext)?.localizedDescription ?? (ext.isEmpty ? "file without an extension" : ".\(ext) file")
+            return ImportFailure(title: "“\(file)” isn't compatible", reason: "It's a \(kind), not a video. " + Self.supportedFormats)
+        }
+        return nil
+    }
+
     private func next() {
         guard !busy, !queue.isEmpty else { return }
-        busy = true
         let src = queue.removeFirst()
+        if let problem = compatibilityProblem(src) {
+            log.error("rejected \(src.lastPathComponent, privacy: .public): \(problem.title, privacy: .public)")
+            failures.append(problem)
+            onChange?()
+            return next()
+        }
+        busy = true
         let name = src.deletingPathExtension().lastPathComponent
         var out = dir.appending(path: name + ".mp4")
         var n = 2
@@ -112,10 +161,18 @@ final class Library {
                 log.notice("converted \(src.lastPathComponent, privacy: .public) -> \(out.lastPathComponent, privacy: .public)")
                 reload()
                 onConverted?(out)
+            } catch let failure as ImportFailure {
+                try? FileManager.default.removeItem(at: tmp)
+                log.error("failed \(src.lastPathComponent, privacy: .public): \(failure.reason, privacy: .public) \(failure.details ?? "", privacy: .public)")
+                failures.append(failure)
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
                 log.error("failed \(src.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                failures.append(ImportFailure(name: src.lastPathComponent, reason: error.localizedDescription))
+                failures.append(ImportFailure(
+                    title: "“\(src.lastPathComponent)” couldn't be added",
+                    reason: "The video was converted but couldn't be saved. Check that your disk isn't full.",
+                    details: error.localizedDescription
+                ))
             }
             converting = nil
             busy = false
@@ -135,33 +192,53 @@ final class Library {
     }
 
     private func convert(_ src: URL, to dst: URL, name: String) async throws {
+        let file = src.lastPathComponent
         do {
             try await exportWithAVFoundation(src, to: dst, name: name)
-        } catch {
-            log.notice("AVFoundation export failed (\(error.localizedDescription, privacy: .public)); trying ffmpeg")
-            guard let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
-                .first(where: FileManager.default.isExecutableFile(atPath:)) else {
-                throw Failure(errorDescription: "It's damaged, or in a format macOS can't read. For WebM, MKV or AVI, install ffmpeg (brew install ffmpeg) and try again.")
+        } catch let avError {
+            log.notice("AVFoundation export failed (\(avError.localizedDescription, privacy: .public)); trying ffmpeg")
+            guard let ffmpeg = Self.ffmpegPath else {
+                throw ImportFailure(
+                    title: "“\(file)” couldn't be converted",
+                    reason: "The file looks damaged, or uses a codec macOS can't decode. Installing ffmpeg (brew install ffmpeg) lets LiveWallpaper try harder.",
+                    details: "macOS: \(avError.localizedDescription)"
+                )
             }
             // ffmpeg only decodes into ProRes (built into every ffmpeg, read natively by macOS);
             // the final HEVC encode stays on the AVFoundation hardware path.
             let intermediate = dst.deletingPathExtension().appendingPathExtension("mov")
             defer { try? FileManager.default.removeItem(at: intermediate) }
-            try await decodeWithFFmpeg(ffmpeg, src, to: intermediate)
+            do {
+                try await decodeWithFFmpeg(ffmpeg, src, to: intermediate)
+            } catch {
+                throw ImportFailure(
+                    title: "“\(file)” is broken",
+                    reason: "Neither macOS nor ffmpeg could read a video from it — the file is damaged or isn't really a video.",
+                    details: "macOS: \(avError.localizedDescription)\nffmpeg: \(error.localizedDescription)"
+                )
+            }
             try? FileManager.default.removeItem(at: dst)
-            try await exportWithAVFoundation(intermediate, to: dst, name: name)
+            do {
+                try await exportWithAVFoundation(intermediate, to: dst, name: name)
+            } catch {
+                throw ImportFailure(
+                    title: "“\(file)” couldn't be converted",
+                    reason: "It was decoded, but re-encoding it for playback failed.",
+                    details: error.localizedDescription
+                )
+            }
         }
     }
 
     private func exportWithAVFoundation(_ src: URL, to dst: URL, name: String) async throws {
         let asset = AVURLAsset(url: src)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            throw Failure(errorDescription: "macOS can't read a video track from this file.")
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "No video track found."])
         }
         // Video-only composition so the output carries no audio track.
         let comp = AVMutableComposition()
         guard let videoTrack = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            throw Failure(errorDescription: "Couldn't prepare the video track.")
+            throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "Couldn't prepare the video track."])
         }
         let (duration, transform) = try await (asset.load(.duration), track.load(.preferredTransform))
         try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: .zero)
@@ -169,7 +246,7 @@ final class Library {
 
         let preset = maxPixelWidth > 1920 ? AVAssetExportPresetHEVC3840x2160 : AVAssetExportPresetHEVC1920x1080
         guard let session = AVAssetExportSession(asset: comp, presetName: preset) else {
-            throw Failure(errorDescription: "HEVC export isn't available.")
+            throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "HEVC export isn't available on this Mac."])
         }
         let watcher = Task { [weak self] in
             for await state in session.states(updateInterval: 0.5) {
@@ -197,8 +274,9 @@ final class Library {
             process.terminationHandler = { p in
                 if p.terminationStatus == 0 { return cont.resume() }
                 let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                Logger(subsystem: "LiveWallpaper", category: "library").error("ffmpeg: \(message.suffix(500), privacy: .public)")
-                cont.resume(throwing: Failure(errorDescription: "The file is damaged or isn't a video, so it couldn't be converted."))
+                // The last line of ffmpeg's output is usually the actual cause.
+                let lastLine = message.split(whereSeparator: \.isNewline).last.map(String.init) ?? "exit code \(p.terminationStatus)"
+                cont.resume(throwing: CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: lastLine]))
             }
             do { try process.run() } catch { cont.resume(throwing: error) }
         }

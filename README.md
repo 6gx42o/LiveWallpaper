@@ -13,7 +13,12 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - the display or the Mac goes to sleep
   - the screen is locked, or another user is switched in
   - Low Power Mode is on (unless you choose otherwise)
-- **Tells you when something is broken.** Files that can't be converted, damaged videos in your library and videos that fail during playback are clearly marked *Broken*.
+- **Drag & drop.** Drop videos onto the window and they're converted and added to your library, ready to pick.
+- **Clear, diagnosable errors.** Anything that can't be used says why, in plain words, with the technical detail and a *Copy details* button:
+  - *isn't compatible* — not a video (with the list of supported formats), or a format that needs ffmpeg
+  - *is broken* — a damaged file that neither macOS nor ffmpeg can read
+  - *couldn't be converted* — decoded but failed to re-encode or save
+  - damaged videos already in the library, and videos that fail during playback, show a red *Broken* tile
 - **Menu bar panel and a full app window** — same controls, one compact and one roomy (resizable, full-screen capable).
 - **Settings:** play in Low Power Mode, pause when the desktop is covered, open at login.
 
@@ -26,6 +31,10 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 | Zero work while hidden | The player is paused — not just hidden — whenever the wallpaper isn't visible, so nothing is decoded. |
 | No polling | Everything is driven by system notifications; there are no timers running in the background. |
 | Display can still sleep | The player never holds a "keep display awake" assertion. |
+
+## Supported formats
+
+MP4, MOV and M4V work out of the box. With ffmpeg installed, WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP are converted too. Everything ends up as a muted HEVC `.mp4`.
 
 ## Requirements
 
@@ -46,7 +55,7 @@ open LiveWallpaper.app
 ## Usage
 
 1. Click the ▶︎ icon in the menu bar (or open the app again to bring up its window).
-2. **Add Video** and pick one or more files — or use Finder's *Open With → LiveWallpaper*. Conversion runs in the background with a progress bar.
+2. **Drag videos onto the window**, click the drop area / **Add Video** to pick files, or use Finder's *Open With → LiveWallpaper*. Conversion runs in the background with a progress bar.
 3. Click a thumbnail to make it your wallpaper. The 🗑 button moves a video to the Trash.
 
 Converted videos live in `~/Library/Application Support/LiveWallpaper/Videos/`.
