@@ -75,9 +75,11 @@ struct ModelList: View {
             case .ready:
                 Label("Runs on your \(SystemInfo.chip) (\(SystemInfo.bytes(SystemInfo.totalMemory)))", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
-            case .needsFreeMemory(let needed, let available):
+            case .needsFreeMemory(let needed, let available, let swapped):
                 VStack(alignment: .leading, spacing: 3) {
-                    Label("Needs about \(SystemInfo.bytes(needed)) free; only \(SystemInfo.bytes(available)) is free right now. Quit some apps first.",
+                    Label(needed > available
+                          ? "Needs about \(SystemInfo.bytes(needed)) free; only \(SystemInfo.bytes(available)) is free right now. Quit some apps first."
+                          : "Needs about \(SystemInfo.bytes(needed)), but macOS is short on memory (\(SystemInfo.bytes(swapped)) swapped to disk). Quit some apps first so upscaling doesn't slow your Mac.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     Button("Free Up Memory…") { model.tab = .memory; model.openWindow?() }

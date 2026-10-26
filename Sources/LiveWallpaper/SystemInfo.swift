@@ -24,6 +24,30 @@ enum SystemInfo {
         return pages * Int64(vm_kernel_page_size)
     }
 
+    /// Pages that are completely unused right now (purge moves cached files here).
+    static func freeMemory() -> Int64 {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count) }
+        }
+        return result == KERN_SUCCESS ? Int64(stats.free_count) * Int64(vm_kernel_page_size) : 0
+    }
+
+    /// macOS's own verdict: 1 = normal, 2 = warning (compressing/swapping), 4 = critical.
+    static func memoryPressure() -> Int {
+        var level: Int32 = 1
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0 ? Int(level) : 1
+    }
+
+    /// Memory already pushed out to disk.
+    static func swapUsed() -> Int64 {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.size
+        return sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 ? Int64(usage.xsu_used) : 0
+    }
+
     static func bytes(_ value: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .memory)
     }

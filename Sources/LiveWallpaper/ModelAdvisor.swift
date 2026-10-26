@@ -6,8 +6,8 @@ import Metal
 enum ModelAdvisor {
     enum Availability: Equatable {
         case ready
-        /// Fits in RAM but not in what's free right now — closing apps would help.
-        case needsFreeMemory(needed: Int64, available: Int64)
+        /// Fits in RAM but not in what's free right now (or macOS is already swapping) — closing apps would help.
+        case needsFreeMemory(needed: Int64, available: Int64, swapped: Int64)
         /// Can't run on this Mac, with a plain reason.
         case unavailable(String)
 
@@ -62,7 +62,10 @@ enum ModelAdvisor {
             return .unavailable("Needs about \(SystemInfo.bytes(needed)) of RAM, more than this Mac's \(SystemInfo.bytes(SystemInfo.totalMemory)) can spare.")
         }
         let available = SystemInfo.availableMemory()
-        if needed > available { return .needsFreeMemory(needed: needed, available: available) }
+        // macOS keeps some memory looking free by swapping other apps to disk, so its pressure level counts too.
+        if needed > available || (engine != .basic && SystemInfo.memoryPressure() >= 2) {
+            return .needsFreeMemory(needed: needed, available: available, swapped: SystemInfo.swapUsed())
+        }
         return .ready
     }
 
@@ -74,6 +77,9 @@ enum ModelAdvisor {
         }
         let esrgan = availability(.realESRGAN, input: input)
         let apple = availability(.appleSuperResolution, input: input)
+        if SystemInfo.memoryPressure() >= 2, esrgan.canRun {
+            return (.realESRGAN, "It's the best fit for your \(ram), but macOS is short on memory right now — free up memory first (Memory tab).")
+        }
         if SystemInfo.totalMemory >= 16 << 30, esrgan.canRun {
             return (.realESRGAN, "It runs comfortably with \(ram) — the sharpest results, and you can delete its model.")
         }

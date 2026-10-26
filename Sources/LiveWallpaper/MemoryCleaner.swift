@@ -15,6 +15,8 @@ final class MemoryCleaner: ObservableObject {
     }
 
     @Published private(set) var available: Int64 = SystemInfo.availableMemory()
+    @Published private(set) var pressure = SystemInfo.memoryPressure()
+    @Published private(set) var swapped = SystemInfo.swapUsed()
     @Published private(set) var apps: [AppUsage] = []
     @Published var selected: Set<pid_t> = []
     @Published private(set) var lastResult: String?
@@ -41,10 +43,19 @@ final class MemoryCleaner: ObservableObject {
 
     func refresh() {
         available = SystemInfo.availableMemory()
+        pressure = SystemInfo.memoryPressure()
+        swapped = SystemInfo.swapUsed()
         let me = ProcessInfo.processInfo.processIdentifier
-        apps = NSWorkspace.shared.runningApplications
+        let processes = Self.allProcesses()
+        let running = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular && $0.processIdentifier != me && !$0.isTerminated }
-            .map { AppUsage(app: $0, bytes: Self.footprint($0.processIdentifier)) }
+        // With several copies of one app open, helpers can't be told apart, so each copy counts only itself.
+        let copies = Dictionary(grouping: running) { $0.bundleURL?.path ?? "\($0.processIdentifier)" }.mapValues(\.count)
+        apps = running
+            .map { app in
+                let shared = copies[app.bundleURL?.path ?? ""] ?? 1 > 1
+                return AppUsage(app: app, bytes: shared ? Self.footprint(app.processIdentifier) : Self.totalFootprint(of: app, processes: processes))
+            }
             .sorted { $0.bytes > $1.bytes }
         selected = selected.filter { pid in apps.contains { $0.id == pid } }
     }
@@ -80,7 +91,7 @@ final class MemoryCleaner: ObservableObject {
 
     /// Clears the disk cache macOS keeps in RAM, using the system's `purge` tool (macOS asks for a password).
     func cleanCache() {
-        let before = SystemInfo.availableMemory()
+        let before = SystemInfo.freeMemory()
         var error: NSDictionary?
         NSAppleScript(source: "do shell script \"/usr/sbin/purge\" with administrator privileges with prompt \"LiveWallpaper needs your password to clear macOS's memory cache.\"")?
             .executeAndReturnError(&error)
@@ -88,10 +99,35 @@ final class MemoryCleaner: ObservableObject {
             lastResult = (error[NSAppleScript.errorNumber] as? Int) == -128 ? nil : "Couldn't clear the cache: \(error[NSAppleScript.errorMessage] as? String ?? "unknown error")"
             return
         }
+        let after = SystemInfo.freeMemory()
         refresh()
         onCacheCleared?()
-        Logger(subsystem: "LiveWallpaper", category: "memory").notice("purge done: \(before) -> \(self.available) bytes available")
-        lastResult = "Cleared the cache — freed \(SystemInfo.bytes(max(available - before, 0))); \(SystemInfo.bytes(available)) now available."
+        Logger(subsystem: "LiveWallpaper", category: "memory").notice("purge done: free \(before) -> \(after) bytes")
+        // purge turns cached files into truly free memory, so report the change in free memory.
+        lastResult = "Cleared macOS's file cache — free memory went from \(SystemInfo.bytes(before)) to \(SystemInfo.bytes(after))."
+    }
+
+    /// Every process's executable path and memory footprint.
+    private static func allProcesses() -> [(path: String, bytes: Int64)] {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) * 2)
+        let filled = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        var result: [(String, Int64)] = []
+        var buffer = [CChar](repeating: 0, count: 4096)
+        for pid in pids.prefix(Int(max(filled, 0))) where pid > 0 {
+            guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
+            result.append((String(cString: buffer), footprint(pid)))
+        }
+        return result
+    }
+
+    /// An app's own memory plus its helper processes (browsers and Electron apps run many),
+    /// i.e. every process whose executable lives inside the app's bundle.
+    private static func totalFootprint(of app: NSRunningApplication, processes: [(path: String, bytes: Int64)]) -> Int64 {
+        guard let bundle = app.bundleURL?.path else { return footprint(app.processIdentifier) }
+        let total = processes.filter { $0.path.hasPrefix(bundle + "/") }.reduce(Int64(0)) { $0 + $1.bytes }
+        return max(total, footprint(app.processIdentifier))
     }
 
     /// Physical memory footprint of a process (what Activity Monitor calls "Memory").
@@ -123,10 +159,18 @@ struct MemoryView: View {
                     Text("\(SystemInfo.bytes(cleaner.available)) available").monospacedDigit()
                 }
                 .font(.caption).foregroundStyle(.secondary)
+                Label(cleaner.pressure >= 4 ? "Memory pressure: critical" : cleaner.pressure >= 2 ? "Memory pressure: high — macOS is compressing and swapping" : "Memory pressure: normal",
+                      systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption).foregroundStyle(cleaner.pressure >= 2 ? .orange : .secondary)
+                if cleaner.swapped > 0 {
+                    Text("\(SystemInfo.bytes(cleaner.swapped)) swapped to disk").font(.caption).foregroundStyle(.secondary)
+                }
                 if let needed {
-                    let enough = cleaner.available >= needed.bytes
+                    let enough = cleaner.available >= needed.bytes && cleaner.pressure < 2
                     Label(enough ? "Enough free memory for \(needed.name) (needs about \(SystemInfo.bytes(needed.bytes)))."
-                                 : "\(needed.name) needs about \(SystemInfo.bytes(needed.bytes)) — free up \(SystemInfo.bytes(needed.bytes - cleaner.available)) more by quitting apps below.",
+                                 : cleaner.available < needed.bytes
+                                    ? "\(needed.name) needs about \(SystemInfo.bytes(needed.bytes)) — free up \(SystemInfo.bytes(needed.bytes - cleaner.available)) more by quitting apps below."
+                                    : "\(needed.name) needs about \(SystemInfo.bytes(needed.bytes)), but memory pressure is high — quit apps below to bring it back to normal.",
                           systemImage: enough ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(enough ? .green : .orange).font(.callout)
                 }
