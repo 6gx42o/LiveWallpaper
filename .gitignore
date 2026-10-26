@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+LiveWallpaper.app/
+.DS_Store
