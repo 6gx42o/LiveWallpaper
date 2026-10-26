@@ -27,7 +27,7 @@ final class Library {
 
     static let supportedFormats = "MP4, MOV and M4V work out of the box. With ffmpeg installed: WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP."
     /// Formats macOS can't decode itself but ffmpeg can.
-    static let ffmpegExtensions: Set<String> = ["webm", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "ogv", "3gp", "vob"]
+    nonisolated static let ffmpegExtensions: Set<String> = ["webm", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "ogv", "3gp", "vob"]
     /// Looked up each time, so installing ffmpeg works without restarting the app.
     static var ffmpegPath: String? {
         ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].first(where: FileManager.default.isExecutableFile(atPath:))
@@ -44,8 +44,8 @@ final class Library {
     private(set) var notices: [Notice] = []
     var onChange: (() -> Void)?
     var onConverted: ((URL) -> Void)?
-    /// (original, upscaled copy)
-    var onUpscaled: ((URL, URL) -> Void)?
+    /// (original, upscaled copy, method used)
+    var onUpscaled: ((URL, URL, Upscaler.Method) -> Void)?
     private var inspecting: Set<URL> = []
     private var queue: [Job] = []
     private var allEdits: [String: Edits] = {
@@ -282,7 +282,7 @@ final class Library {
                 let out = freeURL(for: "\(name) (Upscaled)")
                 let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
                 defer { try? FileManager.default.removeItem(at: tmp) }
-                let result = try await Upscaler.upscale(url, to: tmp, target: target, allowModelDownload: allowModelDownload) { label, fraction in
+                let result = try await Upscaler.upscale(url, to: tmp, target: target, engine: .current, allowModelDownload: allowModelDownload) { label, fraction in
                     self.setProgress(label, fraction)
                 }
                 try FileManager.default.moveItem(at: tmp, to: out)
@@ -293,10 +293,10 @@ final class Library {
                     kind: .info,
                     title: "Upscaled “\(name)” to \(Int(target.width))×\(Int(target.height))",
                     reason: "Used \(result.method.name). The original is kept; the upscaled copy is now in your library.",
-                    details: result.fallbackReason.map { "Super Resolution wasn't used: \($0)" }
+                    details: result.fallbackReason.map { "\(Upscaler.Engine.current.title) wasn't used: \($0)" }
                 ))
                 reload()
-                onUpscaled?(url, out)
+                onUpscaled?(url, out, result.method)
             } catch let notice as Notice {
                 notices.append(notice)
             } catch {

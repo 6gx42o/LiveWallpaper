@@ -3,21 +3,49 @@ import CoreImage
 import VideoToolbox
 import os
 
-/// Upscales a low-resolution wallpaper to cover the display.
-/// Prefers Apple's on-device ML Super Resolution (macOS 26+, Apple silicon); falls back to Lanczos.
+/// Upscales a low-resolution wallpaper to cover the display, with the engine chosen in Settings.
+/// Model-based engines download their model only when an upscale is requested; anything that
+/// can't run falls back to Lanczos and says why.
 enum Upscaler {
+    /// The user's choice in Settings.
+    enum Engine: String, CaseIterable {
+        case realESRGAN, appleSuperResolution, basic
+
+        var title: String {
+            switch self {
+            case .realESRGAN: "Real-ESRGAN"
+            case .appleSuperResolution: "Apple Super Resolution"
+            case .basic: "Basic (no download)"
+            }
+        }
+
+        static var current: Engine {
+            get { UserDefaults.standard.string(forKey: "upscaler").flatMap(Engine.init) ?? .realESRGAN }
+            set { UserDefaults.standard.set(newValue.rawValue, forKey: "upscaler") }
+        }
+    }
+
+    /// What actually did the upscaling.
     enum Method {
-        case superResolution, lanczos
-        var name: String { self == .superResolution ? "Apple Super Resolution (on-device ML)" : "Lanczos scaling" }
+        case realESRGAN, superResolution, lanczos
+        var name: String {
+            switch self {
+            case .realESRGAN: "Real-ESRGAN (on-device ML)"
+            case .superResolution: "Apple Super Resolution (on-device ML)"
+            case .lanczos: "Lanczos scaling"
+            }
+        }
     }
 
     struct Result {
         let method: Method
-        /// Why Super Resolution wasn't used, if it wasn't.
+        /// Why the chosen ML engine wasn't used, if it wasn't.
         var fallbackReason: String?
     }
 
     private static let log = Logger(subsystem: "LiveWallpaper", category: "upscale")
+    /// Largest source either ML engine takes (they upscale 4× before fitting the display).
+    private static let maxMLInput = CGSize(width: 1920, height: 1080)
 
     /// Size that covers `display` with `video`'s aspect ratio: never smaller than the video, at most 4×, even dimensions.
     static func targetSize(for video: CGSize, display: CGSize) -> CGSize {
@@ -27,39 +55,59 @@ enum Upscaler {
         return CGSize(width: even(video.width * scale), height: even(video.height * scale))
     }
 
-    /// Whether Super Resolution can handle this source size on this Mac.
+    /// The method `engine` would use for a video of this size on this Mac.
+    static func method(for engine: Engine, video: CGSize) -> Method {
+        let fits = max(video.width, video.height) <= maxMLInput.width && min(video.width, video.height) <= maxMLInput.height
+        switch engine {
+        case .realESRGAN: return fits ? .realESRGAN : .lanczos
+        case .appleSuperResolution: return superResolutionSupported(for: video) ? .superResolution : .lanczos
+        case .basic: return .lanczos
+        }
+    }
+
+    /// Whether Apple's Super Resolution can handle this source size on this Mac.
     static func superResolutionSupported(for video: CGSize) -> Bool {
         guard #available(macOS 26.0, *) else { return false }
         return configuration(for: video) != nil
     }
 
-    /// Super Resolution's model is fetched by macOS (from Apple) the first time it's used.
-    static func needsModelDownload(for video: CGSize) -> Bool {
-        guard #available(macOS 26.0, *), let config = configuration(for: video) else { return false }
-        return config.configurationModelStatus != .ready
+    /// Whether upscaling this video with `engine` needs a model download first.
+    static func needsModelDownload(engine: Engine, video: CGSize) -> Bool {
+        switch method(for: engine, video: video) {
+        case .realESRGAN: return !RealESRGAN.isDownloaded
+        case .superResolution:
+            guard #available(macOS 26.0, *), let config = configuration(for: video) else { return false }
+            return config.configurationModelStatus != .ready
+        case .lanczos: return false
+        }
     }
 
-    /// Upscales `src` to `target`. `allowModelDownload` lets macOS fetch the Super Resolution model if needed.
-    static func upscale(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
+    /// Upscales `src` to `target` with `engine`. `allowModelDownload` permits fetching the engine's model.
+    static func upscale(_ src: URL, to dst: URL, target: CGSize, engine: Engine, allowModelDownload: Bool,
                         progress: @escaping @MainActor (String, Double?) -> Void) async throws -> Result {
         var reason: String?
-        if #available(macOS 26.0, *) {
-            do {
+        do {
+            switch engine {
+            case .realESRGAN:
+                try await realESRGAN(src, to: dst, target: target, allowModelDownload: allowModelDownload, progress: progress)
+                return Result(method: .realESRGAN)
+            case .appleSuperResolution:
+                guard #available(macOS 26.0, *) else { throw failure("Apple Super Resolution needs macOS 26 or later.") }
                 try await superResolve(src, to: dst, target: target, allowModelDownload: allowModelDownload, progress: progress)
                 return Result(method: .superResolution)
-            } catch {
-                reason = describe(error)
-                log.notice("Super Resolution unavailable, using Lanczos: \(error.localizedDescription, privacy: .public)")
-                try? FileManager.default.removeItem(at: dst)
+            case .basic:
+                break
             }
-        } else {
-            reason = "Super Resolution needs macOS 26 or later."
+        } catch {
+            reason = describe(error)
+            log.notice("\(engine.rawValue, privacy: .public) unavailable, using Lanczos: \(error.localizedDescription, privacy: .public)")
+            try? FileManager.default.removeItem(at: dst)
         }
         try await lanczos(src, to: dst, target: target, progress: progress)
         return Result(method: .lanczos, fallbackReason: reason)
     }
 
-    /// Plain-language reason for a Super Resolution failure.
+    /// Plain-language reason for an ML upscaling failure.
     private static func describe(_ error: Error) -> String {
         let nsError = error as NSError
         guard nsError.domain == "VTFrameProcessorErrorDomain" else { return error.localizedDescription }
@@ -73,53 +121,21 @@ enum Upscaler {
         CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: text])
     }
 
-    // MARK: Super Resolution
+    // MARK: Shared frame pipeline
 
-    @available(macOS 26.0, *)
-    private static func configuration(for video: CGSize) -> VTSuperResolutionScalerConfiguration? {
-        guard VTSuperResolutionScalerConfiguration.isSupported else { return nil }
-        return VTSuperResolutionScalerConfiguration(
-            frameWidth: Int(video.width), frameHeight: Int(video.height), scaleFactor: 4,
-            inputType: .video, usePrecomputedFlow: false, qualityPrioritization: .normal,
-            revision: VTSuperResolutionScalerConfiguration.defaultRevision)
-    }
-
-    @available(macOS 26.0, *)
-    private static func superResolve(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
-                                     progress: @escaping @MainActor (String, Double?) -> Void) async throws {
-        let asset = AVURLAsset(url: src)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
-        let (natural, transform) = try await track.load(.naturalSize, .preferredTransform)
+    /// Reads every frame, lets `process` upscale it, resizes the result to exactly `target` with Lanczos,
+    /// and encodes high-quality HEVC. `readerFormat` is the pixel format the engine wants.
+    private static func transcode(_ asset: AVURLAsset, track: AVAssetTrack, to dst: URL, target: CGSize,
+                                  readerFormat: Any, label: String,
+                                  progress: @escaping @MainActor (String, Double?) -> Void,
+                                  process: (CVPixelBuffer, CMTime) async throws -> CIImage) async throws {
+        let transform = try await track.load(.preferredTransform)
         let duration = try await asset.load(.duration).seconds
-        guard let config = configuration(for: natural) else {
-            throw failure("Super Resolution doesn't support \(Int(natural.width))×\(Int(natural.height)) input on this Mac.")
-        }
-
-        if config.configurationModelStatus != .ready {
-            guard allowModelDownload else { throw failure("Apple's upscaling model isn't downloaded.") }
-            await progress("Downloading Apple's upscaling model…", nil)
-            let watcher = Task {
-                while !Task.isCancelled {
-                    await progress("Downloading Apple's upscaling model…", Double(config.configurationModelPercentageAvailable) / 100)
-                    try? await Task.sleep(for: .milliseconds(500))
-                }
-            }
-            defer { watcher.cancel() }
-            try await config.downloadConfigurationModel()
-            guard config.configurationModelStatus == .ready else { throw failure("The upscaling model didn't finish downloading.") }
-        }
-
-        let processor = VTFrameProcessor()
-        try processor.startSession(configuration: config)
-        defer { processor.endSession() }
-
-        // Decode in the pixel format the scaler wants, IOSurface-backed.
         let reader = try AVAssetReader(asset: asset)
-        var readerSettings: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
-        if let format = config.sourcePixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey as String] {
-            readerSettings[kCVPixelBufferPixelFormatTypeKey as String] = format
-        }
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: readerSettings)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: readerFormat,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ])
         output.alwaysCopiesSampleData = false
         reader.add(output)
 
@@ -142,38 +158,20 @@ enum Upscaler {
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
         ])
         writer.add(input)
-
-        var scaledPool: CVPixelBufferPool?
-        CVPixelBufferPoolCreate(nil, nil, config.destinationPixelBufferAttributes as CFDictionary, &scaledPool)
-        guard let scaledPool, reader.startReading(), writer.startWriting() else {
-            throw reader.error ?? writer.error ?? failure("Couldn't start upscaling.")
-        }
+        guard reader.startReading(), writer.startWriting() else { throw reader.error ?? writer.error ?? failure("Couldn't start upscaling.") }
         writer.startSession(atSourceTime: .zero)
 
         let context = CIContext()
-        var previousSource: VTFrameProcessorFrame?, previousOutput: VTFrameProcessorFrame?
         while let sample = output.copyNextSampleBuffer() {
-            guard let sourceBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            try Task.checkCancellation()
+            guard let frame = CMSampleBufferGetImageBuffer(sample) else { continue }
             let time = CMSampleBufferGetPresentationTimeStamp(sample)
-            var scaledBuffer: CVPixelBuffer?
-            CVPixelBufferPoolCreatePixelBuffer(nil, scaledPool, &scaledBuffer)
-            guard let scaledBuffer,
-                  let sourceFrame = VTFrameProcessorFrame(buffer: sourceBuffer, presentationTimeStamp: time),
-                  let scaledFrame = VTFrameProcessorFrame(buffer: scaledBuffer, presentationTimeStamp: time),
-                  let parameters = VTSuperResolutionScalerParameters(
-                      sourceFrame: sourceFrame, previousFrame: previousSource, previousOutputFrame: previousOutput,
-                      opticalFlow: nil, submissionMode: .sequential, destinationFrame: scaledFrame)
-            else { throw failure("Couldn't prepare a frame for upscaling.") }
-            _ = try await processor.process(parameters: parameters)
-            previousSource = sourceFrame
-            previousOutput = scaledFrame
+            let image = try await process(frame, time)
 
-            // 4× output → exactly the target size, with high-quality resampling.
             guard let pool = adaptor.pixelBufferPool else { throw writer.error ?? failure("The encoder stopped.") }
             var outBuffer: CVPixelBuffer?
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outBuffer)
             guard let outBuffer else { throw failure("Out of memory while upscaling.") }
-            let image = CIImage(cvPixelBuffer: scaledBuffer)
             let scaleY = outSize.height / image.extent.height
             let resized = image.applyingFilter("CILanczosScaleTransform", parameters: [
                 kCIInputScaleKey: scaleY,
@@ -183,7 +181,7 @@ enum Upscaler {
 
             while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
             guard adaptor.append(outBuffer, withPresentationTime: time) else { throw writer.error ?? failure("Couldn't write the upscaled video.") }
-            if duration > 0 { await progress("Upscaling with Apple Super Resolution…", time.seconds / duration) }
+            if duration > 0 { await progress(label, time.seconds / duration) }
         }
         if reader.status == .failed { throw reader.error ?? failure("Couldn't read the video.") }
         input.markAsFinished()
@@ -191,7 +189,100 @@ enum Upscaler {
         if writer.status != .completed { throw writer.error ?? failure("Couldn't finish the upscaled video.") }
     }
 
-    // MARK: Lanczos fallback
+    // MARK: Real-ESRGAN
+
+    private static func realESRGAN(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
+                                   progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+        let asset = AVURLAsset(url: src)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
+        let natural = try await track.load(.naturalSize)
+        guard method(for: .realESRGAN, video: natural) == .realESRGAN else {
+            throw failure("Real-ESRGAN handles videos up to 1920×1080; this one is \(Int(natural.width))×\(Int(natural.height)).")
+        }
+        if !RealESRGAN.isDownloaded {
+            guard allowModelDownload else { throw failure("The Real-ESRGAN model isn't downloaded.") }
+            await progress("Downloading the Real-ESRGAN model…", 0)
+            try await RealESRGAN.download { fraction in
+                Task { @MainActor in progress("Downloading the Real-ESRGAN model…", fraction) }
+            }
+        }
+        let network = try RealESRGAN.Network(layers: try RealESRGAN.loadLayers(), width: Int(natural.width), height: Int(natural.height))
+        var big: CVPixelBuffer?
+        CVPixelBufferCreate(nil, Int(natural.width) * 4, Int(natural.height) * 4, kCVPixelFormatType_32BGRA,
+                            [kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()] as CFDictionary, &big)
+        guard let big else { throw failure("Out of memory while upscaling.") }
+        try await transcode(asset, track: track, to: dst, target: target, readerFormat: kCVPixelFormatType_32BGRA,
+                            label: "Upscaling with Real-ESRGAN…", progress: progress) { frame, _ in
+            try network.upscale(frame, into: big)
+            return CIImage(cvPixelBuffer: big)
+        }
+    }
+
+    // MARK: Apple Super Resolution
+
+    @available(macOS 26.0, *)
+    private static func configuration(for video: CGSize) -> VTSuperResolutionScalerConfiguration? {
+        guard VTSuperResolutionScalerConfiguration.isSupported else { return nil }
+        return VTSuperResolutionScalerConfiguration(
+            frameWidth: Int(video.width), frameHeight: Int(video.height), scaleFactor: 4,
+            inputType: .video, usePrecomputedFlow: false, qualityPrioritization: .normal,
+            revision: VTSuperResolutionScalerConfiguration.defaultRevision)
+    }
+
+    @available(macOS 26.0, *)
+    private static func superResolve(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
+                                     progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+        let asset = AVURLAsset(url: src)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
+        let natural = try await track.load(.naturalSize)
+        guard let config = configuration(for: natural) else {
+            throw failure("Super Resolution doesn't support \(Int(natural.width))×\(Int(natural.height)) input on this Mac.")
+        }
+
+        if config.configurationModelStatus != .ready {
+            guard allowModelDownload else { throw failure("Apple's upscaling model isn't downloaded.") }
+            await progress("Downloading Apple's upscaling model…", nil)
+            let watcher = Task {
+                while !Task.isCancelled {
+                    await progress("Downloading Apple's upscaling model…", Double(config.configurationModelPercentageAvailable) / 100)
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
+            defer { watcher.cancel() }
+            try await config.downloadConfigurationModel()
+            guard config.configurationModelStatus == .ready else { throw failure("The upscaling model didn't finish downloading.") }
+        }
+
+        let processor = VTFrameProcessor()
+        try processor.startSession(configuration: config)
+        defer { processor.endSession() }
+        var scaledPool: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(nil, nil, config.destinationPixelBufferAttributes as CFDictionary, &scaledPool)
+        guard let scaledPool,
+              let format = config.sourcePixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey as String] else {
+            throw failure("Couldn't set up Super Resolution.")
+        }
+
+        var previousSource: VTFrameProcessorFrame?, previousOutput: VTFrameProcessorFrame?
+        try await transcode(asset, track: track, to: dst, target: target, readerFormat: format,
+                            label: "Upscaling with Apple Super Resolution…", progress: progress) { frame, time in
+            var scaledBuffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, scaledPool, &scaledBuffer)
+            guard let scaledBuffer,
+                  let sourceFrame = VTFrameProcessorFrame(buffer: frame, presentationTimeStamp: time),
+                  let scaledFrame = VTFrameProcessorFrame(buffer: scaledBuffer, presentationTimeStamp: time),
+                  let parameters = VTSuperResolutionScalerParameters(
+                      sourceFrame: sourceFrame, previousFrame: previousSource, previousOutputFrame: previousOutput,
+                      opticalFlow: nil, submissionMode: .sequential, destinationFrame: scaledFrame)
+            else { throw failure("Couldn't prepare a frame for upscaling.") }
+            _ = try await processor.process(parameters: parameters)
+            previousSource = sourceFrame
+            previousOutput = scaledFrame
+            return CIImage(cvPixelBuffer: scaledBuffer)
+        }
+    }
+
+    // MARK: Lanczos
 
     private static func lanczos(_ src: URL, to dst: URL, target: CGSize,
                                 progress: @escaping @MainActor (String, Double?) -> Void) async throws {

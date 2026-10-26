@@ -42,14 +42,19 @@ struct PanelView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 18) {
-                settings
-                Spacer()
+                ScrollView { settings }
+                Spacer(minLength: 0)
                 quitButton
             }
             .padding(24)
             .frame(width: 300)
             .frame(maxHeight: .infinity, alignment: .top)
             .background(Color.secondary.opacity(0.06))
+            .sheet(isPresented: Binding(get: { model.scanner != nil }, set: { if !$0 { model.finishScan(adding: []) } })) {
+                if let scanner = model.scanner {
+                    ScanView(scanner: scanner) { model.finishScan(adding: $0) }
+                }
+            }
         }
         .frame(minWidth: 760, minHeight: 500)
         .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
@@ -140,6 +145,13 @@ struct PanelView: View {
                 Text("Wallpapers").font(isWindow ? .title3.weight(.semibold) : .subheadline.weight(.semibold))
                 Spacer()
                 Button {
+                    model.startScan()
+                } label: {
+                    Label("Find Videos", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .help("Scan Movies, Downloads, Desktop, Documents and Pictures for videos that could be wallpapers")
+                Button {
                     model.addVideos()
                 } label: {
                     Label("Add Video", systemImage: "plus")
@@ -221,6 +233,37 @@ struct PanelView: View {
                     ? "Allow it in System Settings › General › Login Items."
                     : "Start LiveWallpaper automatically.",
                 isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })
+            )
+
+            Text("Upscaling").font(isWindow ? .headline : .subheadline.weight(.semibold)).padding(.top, 6)
+            Picker("Upscaler", selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
+                ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .help("Which upscaler the Upscale button uses")
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Real-ESRGAN model")
+                    Text(model.realESRGANSize.map { "Downloaded · \(UpscalerModel.sizeText($0))" }
+                         ?? "Not downloaded — downloads (\(UpscalerModel.sizeText(RealESRGAN.downloadSize))) only when you upscale.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("Delete…") { model.deleteRealESRGANModel() }
+                    .controlSize(.small)
+                    .disabled(model.realESRGANSize == nil)
+                    .help("Delete the model to free space (asks to confirm)")
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple's model")
+                Text(model.appleModelSize.map { "\(UpscalerModel.sizeText($0)) · managed by macOS — apps can't delete it; macOS removes it when it needs space." }
+                     ?? "Not downloaded — only fetched if you upscale with Apple Super Resolution.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            SettingRow(
+                title: "Ask after upscaling",
+                detail: "Offer to keep or delete the Real-ESRGAN model each time it's used.",
+                isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 })
             )
         }
     }

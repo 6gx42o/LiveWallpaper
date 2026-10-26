@@ -14,6 +14,24 @@ final class AppModel: ObservableObject {
     var isDropTargeted = false { didSet { objectWillChange.send() } }
     /// The open video editor, if any.
     private(set) var editor: EditorModel? { didSet { objectWillChange.send() } }
+    /// The open "find videos on this Mac" scan, if any.
+    private(set) var scanner: VideoScanner? { didSet { objectWillChange.send() } }
+    /// Size of the downloaded Real-ESRGAN model; nil when it isn't downloaded.
+    private(set) var realESRGANSize: Int64? = RealESRGAN.sizeOnDisk { didSet { objectWillChange.send() } }
+    /// Size of Apple's (macOS-managed) model; nil when macOS hasn't downloaded it.
+    private(set) var appleModelSize: Int64? = UpscalerModel.sizeOnDisk() { didSet { objectWillChange.send() } }
+    /// Setting: which upscaler to use.
+    var upscaler: Upscaler.Engine {
+        get { Upscaler.Engine.current }
+        set { Upscaler.Engine.current = newValue; objectWillChange.send() }
+    }
+    /// Setting: after upscaling with Real-ESRGAN, ask whether to keep or delete its model.
+    var asksToDeleteModel = UserDefaults.standard.object(forKey: "asksToDeleteModel") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(asksToDeleteModel, forKey: "asksToDeleteModel")
+            objectWillChange.send()
+        }
+    }
     private var windows: [WallpaperWindow] = []
     private let log = Logger(subsystem: "LiveWallpaper", category: "app")
 
@@ -41,9 +59,11 @@ final class AppModel: ObservableObject {
             objectWillChange.send()
         }
         library.onConverted = { [unowned self] url in if current == nil { current = url } }
-        library.onUpscaled = { [unowned self] original, upscaled in
+        library.onUpscaled = { [unowned self] original, upscaled, method in
             if current == original { current = upscaled }
             if lockScreen == original { setLockScreen(upscaled) }
+            refreshModelSizes()
+            if method == .realESRGAN, asksToDeleteModel, realESRGANSize != nil { askToKeepModel() }
         }
 
         let defaults = UserDefaults.standard
@@ -133,21 +153,27 @@ final class AppModel: ObservableObject {
 
     // MARK: Upscaling
 
-    /// Which upscaler a video would get on this Mac.
+    /// Which upscaler a video would get on this Mac with the current setting.
     func upscaleMethod(for url: URL) -> Upscaler.Method {
         guard let size = library.infos[url]?.size else { return .lanczos }
-        return Upscaler.superResolutionSupported(for: size) ? .superResolution : .lanczos
+        return Upscaler.method(for: upscaler, video: size)
     }
 
-    /// Upscales a copy to cover the display. Asks before macOS downloads Apple's model the first time.
+    /// Upscales a copy to cover the display. Models download only now, and only after asking.
     func upscale(_ url: URL) {
         guard let size = library.infos[url]?.size else { return }
         var allowDownload = false
-        if Upscaler.needsModelDownload(for: size) {
+        if Upscaler.needsModelDownload(engine: upscaler, video: size) {
             NSApp.activate()
             let alert = NSAlert()
-            alert.messageText = "Download Apple's upscaling model?"
-            alert.informativeText = "The best upscaler uses Apple's on-device Super Resolution model. macOS downloads it once, from Apple. Without it, LiveWallpaper uses basic Lanczos scaling."
+            switch upscaler {
+            case .realESRGAN:
+                alert.messageText = "Download the Real-ESRGAN model?"
+                alert.informativeText = "Upscaling uses the open-source Real-ESRGAN model (\(UpscalerModel.sizeText(RealESRGAN.downloadSize)), the official file from github.com/xinntao/Real-ESRGAN). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
+            default:
+                alert.messageText = "Download Apple's upscaling model?"
+                alert.informativeText = "Apple Super Resolution needs a model that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose Real-ESRGAN in Settings for a model you can delete."
+            }
             alert.addButton(withTitle: "Download & Upscale")
             alert.addButton(withTitle: "Use Basic Upscaling")
             alert.addButton(withTitle: "Cancel")
@@ -158,6 +184,71 @@ final class AppModel: ObservableObject {
             }
         }
         library.upscale(url, allowModelDownload: allowDownload)
+    }
+
+    // MARK: Upscaling model
+
+    func refreshModelSizes() {
+        realESRGANSize = RealESRGAN.sizeOnDisk
+        appleModelSize = UpscalerModel.sizeOnDisk()
+    }
+
+    /// After a Real-ESRGAN upscale: keep the model for next time, or delete it to free space.
+    private func askToKeepModel() {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Keep the upscaling model?"
+        alert.informativeText = "Upscaling used the Real-ESRGAN model (\(realESRGANSize.map(UpscalerModel.sizeText) ?? "on disk")). Keep it to upscale again without downloading, or delete it to free up space — it downloads again only if you upscale later."
+        alert.addButton(withTitle: "Keep")
+        alert.addButton(withTitle: "Delete Model")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Always keep, don't ask again"
+        let response = alert.runModal()
+        if alert.suppressionButton?.state == .on { asksToDeleteModel = false }
+        if response == .alertSecondButtonReturn { deleteRealESRGANModel(confirmed: true) }
+    }
+
+    /// Deletes the downloaded Real-ESRGAN model (asks to confirm unless already confirmed).
+    func deleteRealESRGANModel(confirmed: Bool = false) {
+        guard let size = RealESRGAN.sizeOnDisk else { refreshModelSizes(); return }
+        if !confirmed {
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Delete the Real-ESRGAN model?"
+            alert.informativeText = "This frees \(UpscalerModel.sizeText(size)). Your upscaled videos stay. The model downloads again (after asking) only if you upscale later."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        // Another delete may have finished while the dialog was open.
+        guard RealESRGAN.isDownloaded else { refreshModelSizes(); return }
+        do {
+            try RealESRGAN.delete()
+            log.notice("deleted Real-ESRGAN model (\(size) bytes)")
+            library.post(.init(kind: .info, title: "Deleted the upscaling model",
+                               reason: "Freed \(UpscalerModel.sizeText(size)). It downloads again only if you upscale."))
+        } catch {
+            library.post(.init(title: "Couldn't delete the upscaling model", reason: "The model is still on your Mac.",
+                               details: error.localizedDescription))
+        }
+        refreshModelSizes()
+    }
+
+    // MARK: Scanning
+
+    /// Searches common folders for videos that could be wallpapers.
+    func startScan() {
+        openWindow?()
+        let scanner = VideoScanner(existingNames: Set(library.videos.map { $0.deletingPathExtension().lastPathComponent }))
+        self.scanner = scanner
+        scanner.start()
+    }
+
+    func finishScan(adding urls: [URL]) {
+        scanner?.cancel()
+        scanner = nil
+        if !urls.isEmpty { library.add(urls) }
     }
 
     func addVideos() {

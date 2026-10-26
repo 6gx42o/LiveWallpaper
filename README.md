@@ -9,7 +9,11 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Any video, converted automatically — at full quality.** Add a `.mov`, `.mp4`, `.m4v` (or, with ffmpeg installed, `.webm`, `.mkv`, `.avi`…) and it's re-encoded to a muted, hardware-decodable HEVC file at the highest quality, keeping its original resolution (only sources bigger than 4K / your display are scaled down).
 - **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
 - **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
-- **Upscaling.** Low-resolution videos can be upscaled to cover your display with **Apple's on-device Super Resolution** model (macOS 26+, Apple silicon; macOS downloads the model once, with your permission), falling back to high-quality Lanczos scaling.
+- **Upscaling, with models only when you ask.** Low-resolution videos can be upscaled to cover your display. Nothing is bundled with the app: the model downloads only when you press Upscale (after asking), and you choose the engine in Settings:
+  - **Real-ESRGAN** (default) — the official 4.9 MB `realesr-general-x4v3` weights, hash-verified, stored in LiveWallpaper's own folder and run on the GPU. After each upscale you're asked whether to keep or delete it, and Settings has a **Delete…** button (with confirmation).
+  - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it (macOS removes it when it needs space).
+  - **Basic** — Lanczos scaling, no download.
+- **Find Videos.** Scans Movies, Downloads, Desktop, Documents and Pictures for videos that could be wallpapers, grades each against your display (Great fit / Good fit / Low resolution), and lets you tick the ones to add — nothing is added automatically.
 - **Editor.** Trim, playback speed, Fill/Fit framing with crop position, and the lock screen frame — all non-destructive, with a live preview shaped like your display.
 - **Sits behind your desktop icons** on every display and every Space.
 - **Pauses itself when it can't be seen:**
@@ -91,7 +95,10 @@ Sources/LiveWallpaper/
   PanelView.swift        SwiftUI UI used by both the panel and the window
   EditorView.swift       trim / speed / framing / lock frame / quality editor
   VideoInfo.swift        video facts, quality checks against the display, edit model
-  Upscaler.swift         Apple Super Resolution upscaling with Lanczos fallback
+  Upscaler.swift         upscaling engines (Real-ESRGAN, Apple Super Resolution, Lanczos) + frame pipeline
+  RealESRGAN.swift       on-request model download/verify/delete and the network on Metal (MPSGraph)
+  UpscalerModel.swift    reports Apple's macOS-managed model
+  VideoScanner.swift     "Find Videos" scan + results sheet
   LockScreen.swift       lock screen still + restoring your own picture
   PlaybackGate.swift     all play/pause decisions
   Library.swift          import → convert (AVFoundation, ffmpeg fallback) → analysis, edits, upscale jobs
@@ -103,3 +110,5 @@ build.sh                 builds LiveWallpaper.app
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Real-ESRGAN upscaling uses the model weights published by Xintao Wang et al. under the BSD-3-Clause license (https://github.com/xinntao/Real-ESRGAN); they're downloaded on request, not included in this repository.
