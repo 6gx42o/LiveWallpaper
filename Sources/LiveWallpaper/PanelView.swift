@@ -1,96 +1,27 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Status, wallpaper library and settings — as the compact menu bar panel, or as the
-/// resizable (full-screen capable) app window.
+/// The menu bar panel: what's playing, quick picks from the library, and a way into the window.
 struct PanelView: View {
     @ObservedObject var model: AppModel
-    var isWindow = false
 
     var body: some View {
-        if isWindow { windowLayout } else { panelLayout }
-    }
-
-    private var panelLayout: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
             library
             Divider()
-            settings
-            Divider()
             HStack {
+                Button("Settings…") { model.tab = .settings; model.openWindow?() }
                 Spacer()
-                quitButton
+                Button("Quit LiveWallpaper") { NSApp.terminate(nil) }
+                    .keyboardShortcut("q")
             }
+            .buttonStyle(.borderless)
+            .font(.callout)
         }
         .padding(16)
         .frame(width: 340)
-    }
-
-    private var windowLayout: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                Picker("Section", selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
-                    ForEach(AppModel.Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden().pickerStyle(.segmented).frame(maxWidth: 360)
-                Divider()
-                switch model.tab {
-                case .wallpapers:
-                    ScrollView { library.padding(.trailing, 4) }
-                case .upscale:
-                    ScrollView { UpscaleView(studio: model.studio, model: model).padding(.trailing, 4) }
-                case .memory:
-                    MemoryView(cleaner: model.memory, needed: memoryNeed)
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 18) {
-                ScrollView { settings }
-                Spacer(minLength: 0)
-                quitButton
-            }
-            .padding(24)
-            .frame(width: 330)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(Color.secondary.opacity(0.06))
-            .sheet(isPresented: Binding(get: { model.scanner != nil }, set: { if !$0 { model.finishScan(adding: []) } })) {
-                if let scanner = model.scanner {
-                    ScanView(scanner: scanner) { model.finishScan(adding: $0) }
-                }
-            }
-        }
-        .frame(minWidth: 760, minHeight: 500)
-        .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
-            if let editor = model.editor {
-                EditorView(
-                    editor: editor,
-                    upscaleMethod: model.upscaleMethod(for: editor.url).name,
-                    upscale: { model.upscale(editor.url) },
-                    useForLockScreen: { model.useEditorFrameForLockScreen() },
-                    close: { model.closeEditor(save: $0) }
-                )
-            }
-        }
-    }
-
-    /// What the chosen upscaler needs, shown on the Memory tab.
-    private var memoryNeed: (name: String, bytes: Int64)? {
-        let engine = model.studio.info != nil ? model.studio.engine : model.upscaler
-        guard engine != .basic else { return nil }
-        let input = model.studio.info?.size ?? ModelAdvisor.typicalInput
-        return (engine.title, ModelAdvisor.estimatedMemory(engine, input: input))
-    }
-
-    private var quitButton: some View {
-        Button("Quit LiveWallpaper") { NSApp.terminate(nil) }
-            .keyboardShortcut("q")
     }
 
     private func name(_ url: URL?) -> String? { url?.deletingPathExtension().lastPathComponent }
@@ -101,10 +32,10 @@ struct PanelView: View {
         let status = model.status
         return HStack(spacing: 10) {
             Image(systemName: "play.rectangle.fill")
-                .font(.system(size: isWindow ? 30 : 22))
+                .font(.system(size: 22))
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("LiveWallpaper").font(isWindow ? .title2.weight(.semibold) : .headline)
+                Text("LiveWallpaper").font(.headline)
                 HStack(spacing: 5) {
                     Circle().fill(status.color).frame(width: 7, height: 7)
                     Text(status.text)
@@ -131,16 +62,14 @@ struct PanelView: View {
                 .lineLimit(1)
             }
             Spacer()
-            if !isWindow {
-                Button {
-                    model.openWindow?()
-                } label: {
-                    Image(systemName: "macwindow").frame(width: 16, height: 16)
-                }
-                .controlSize(.large)
-                .help("Open the LiveWallpaper window")
-                .accessibilityLabel("Open window")
+            Button {
+                model.openWindow?()
+            } label: {
+                Image(systemName: "macwindow").frame(width: 16, height: 16)
             }
+            .controlSize(.large)
+            .help("Open the LiveWallpaper window")
+            .accessibilityLabel("Open window")
             Button {
                 model.gate.userPaused.toggle()
             } label: {
@@ -160,22 +89,8 @@ struct PanelView: View {
         let lib = model.library
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Wallpapers").font(isWindow ? .title3.weight(.semibold) : .subheadline.weight(.semibold))
+                Text("Wallpapers").font(.subheadline.weight(.semibold))
                 Spacer()
-                Button {
-                    model.addFromYouTube()
-                } label: {
-                    Label("YouTube", systemImage: "play.rectangle")
-                }
-                .buttonStyle(.borderless)
-                .help("Paste a YouTube link to turn it into a wallpaper")
-                Button {
-                    model.startScan()
-                } label: {
-                    Label("Find Videos", systemImage: "magnifyingglass")
-                }
-                .buttonStyle(.borderless)
-                .help("Scan Movies, Downloads, Desktop, Documents and Pictures for videos that could be wallpapers")
                 Button {
                     model.addVideos()
                 } label: {
@@ -183,16 +98,10 @@ struct PanelView: View {
                 }
                 .buttonStyle(.borderless)
             }
-            .controlSize(isWindow ? .large : .regular)
 
-            // The window takes drag & drop; the panel closes as soon as you click another app.
-            if isWindow || lib.videos.isEmpty {
-                DropZone(
-                    isLarge: lib.videos.isEmpty,
-                    acceptsDrops: isWindow,
-                    isTargeted: model.isDropTargeted,
-                    add: model.addVideos
-                )
+            // The panel closes as soon as you click another app, so drag & drop lives in the window.
+            if lib.videos.isEmpty {
+                DropZone(isLarge: true, acceptsDrops: false, add: model.addVideos)
             }
             if let converting = lib.converting {
                 ProgressCard(progress: converting) { model.library.cancelCurrentJob() }
@@ -206,29 +115,12 @@ struct PanelView: View {
             }
 
             if !lib.videos.isEmpty {
-                let columns = isWindow
-                    ? [GridItem(.adaptive(minimum: 220, maximum: 360), spacing: 18)]
-                    : [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-                let grid = LazyVGrid(columns: columns, spacing: isWindow ? 20 : 12) {
+                let grid = LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 12) {
                     ForEach(lib.videos, id: \.self) { url in
-                        WallpaperTile(
-                            name: url.deletingPathExtension().lastPathComponent,
-                            thumbnail: lib.thumbnails[url],
-                            brokenReason: lib.broken[url],
-                            qualityWarning: lib.issues(for: url).first { $0.severity == .warning }?.text,
-                            isHome: url == model.current,
-                            isLock: url == model.lockScreen,
-                            canEdit: lib.infos[url] != nil,
-                            select: { model.select(url) },
-                            toggleLock: { model.setLockScreen(url == model.lockScreen ? nil : url) },
-                            edit: { model.edit(url) },
-                            remove: { model.remove(url) }
-                        )
+                        WallpaperTile(model: model, url: url)
                     }
                 }
-                if isWindow {
-                    grid.padding(2) // the whole column scrolls
-                } else if lib.videos.count > 4 {
+                if lib.videos.count > 4 {
                     ScrollView { grid.padding(2) }.frame(height: 250)
                 } else {
                     grid
@@ -236,98 +128,36 @@ struct PanelView: View {
             }
         }
     }
-
-    // MARK: Settings
-
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Settings").font(isWindow ? .title3.weight(.semibold) : .subheadline.weight(.semibold))
-            SettingRow(
-                title: "Play in Low Power Mode",
-                detail: "Off saves battery: the wallpaper pauses in Low Power Mode.",
-                isOn: Binding(get: { model.gate.playsInLowPowerMode }, set: { model.gate.playsInLowPowerMode = $0 })
-            )
-            SettingRow(
-                title: "Pause when the desktop is covered",
-                detail: "Full-screen apps or maximized windows hide the wallpaper.",
-                isOn: Binding(get: { model.gate.pausesWhenCovered }, set: { model.gate.pausesWhenCovered = $0 })
-            )
-            SettingRow(
-                title: "Open at login",
-                detail: model.launchAtLoginNeedsApproval
-                    ? "Allow it in System Settings › General › Login Items."
-                    : "Start LiveWallpaper automatically.",
-                isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })
-            )
-
-            Text("Quality & upscaling").font(isWindow ? .headline : .subheadline.weight(.semibold)).padding(.top, 6)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Resolution")
-                Picker("Resolution", selection: Binding(get: { model.resolution }, set: { model.resolution = $0 })) {
-                    ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
-                }
-                .labelsHidden()
-                Text("Wallpapers are checked and upscaled for this. Native is your display's own resolution.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Upscaler")
-                Picker("Upscaler", selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
-                    ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .labelsHidden()
-                .help("Which upscaler the Upscale button uses")
-            }
-            // The chosen upscaler: download it, see its RAM use and whether it runs on this Mac.
-            ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video", compact: true, engines: [model.upscaler])
-            Button("Compare all models…") { model.tab = .upscale; model.openWindow?() }
-                .buttonStyle(.link).font(.caption)
-            SettingRow(
-                title: "Ask after upscaling",
-                detail: "Offer to keep or delete the Real-ESRGAN model each time it's used.",
-                isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 })
-            )
-        }
-    }
 }
 
 // MARK: - Components
 
-private struct SettingRow: View {
-    let title: String
-    let detail: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            Toggle(title, isOn: $isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-        }
-    }
+/// Tracks the pointer over a view (this toolchain has no @State).
+final class Hover: ObservableObject {
+    @Published var isOn = false
 }
 
-private struct WallpaperTile: View {
-    let name: String
-    let thumbnail: NSImage?
-    let brokenReason: String?
-    let qualityWarning: String?
-    let isHome: Bool
-    let isLock: Bool
-    let canEdit: Bool
-    let select: () -> Void
-    let toggleLock: () -> Void
-    let edit: () -> Void
-    let remove: () -> Void
+/// A library thumbnail: click for home screen; lock, edit and remove on hover or right-click.
+struct WallpaperTile: View {
+    @ObservedObject var model: AppModel
+    let url: URL
+    @StateObject private var hover = Hover()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var name: String { url.deletingPathExtension().lastPathComponent }
+    private var brokenReason: String? { model.library.broken[url] }
+    private var isHome: Bool { url == model.current }
+    private var isLock: Bool { url == model.lockScreen }
+    private var canEdit: Bool { model.library.infos[url] != nil }
+    private var qualityWarning: String? { model.library.issues(for: url).first { $0.severity == .warning }?.text }
+
+    private func select() { model.select(url) }
+    private func toggleLock() { model.setLockScreen(isLock ? nil : url) }
+    private func edit() { model.edit(url) }
+    private func remove() { model.remove(url) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             Button(action: select) { preview }
                 .buttonStyle(.plain)
                 .disabled(brokenReason != nil)
@@ -336,16 +166,18 @@ private struct WallpaperTile: View {
                 .overlay(alignment: .topTrailing) {
                     Button(action: remove) { circleIcon("trash") }
                         .buttonStyle(.plain)
-                        .padding(5)
+                        .padding(6)
                         .help("Move to Trash")
                         .accessibilityLabel("Remove \(name)")
+                        .opacity(hover.isOn ? 1 : 0)
+                        .allowsHitTesting(hover.isOn)
                 }
                 .overlay(alignment: .topLeading) {
                     HStack(spacing: 4) {
                         if isHome { badge("Home", "house.fill") }
                         if isLock { badge("Lock", "lock.fill") }
                     }
-                    .padding(5)
+                    .padding(6)
                 }
                 .overlay(alignment: .bottomLeading) {
                     if let qualityWarning {
@@ -357,6 +189,8 @@ private struct WallpaperTile: View {
                             .accessibilityLabel("Quality warning: \(qualityWarning)")
                     }
                 }
+                .scaleEffect(hover.isOn && !reduceMotion && brokenReason == nil ? 1.02 : 1)
+                .shadow(color: .black.opacity(hover.isOn ? 0.18 : 0), radius: 8, y: 3)
             HStack(spacing: 4) {
                 if brokenReason != nil {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -371,16 +205,20 @@ private struct WallpaperTile: View {
                     .foregroundStyle(isLock ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     .help(isLock ? "Remove from lock screen" : "Use as lock screen wallpaper")
                     .accessibilityLabel(isLock ? "Remove \(name) from lock screen" : "Use \(name) as lock screen")
+                    .opacity(hover.isOn || isLock ? 1 : 0.5)
                     Button(action: edit) { Image(systemName: "slider.horizontal.3") }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
                         .disabled(!canEdit)
                         .help("Edit: trim, speed, framing, lock screen frame, quality")
                         .accessibilityLabel("Edit \(name)")
+                        .opacity(hover.isOn ? 1 : 0.5)
                 }
             }
             .font(.caption)
         }
+        .onHover { hover.isOn = $0 }
+        .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 1), value: hover.isOn)
         .contextMenu {
             Button("Use as Home Screen", action: select).disabled(brokenReason != nil)
             Button(isLock ? "Remove from Lock Screen" : "Use as Lock Screen", action: toggleLock).disabled(brokenReason != nil)
@@ -417,7 +255,7 @@ private struct WallpaperTile: View {
                         }
                         .foregroundStyle(.red)
                     }
-                } else if let thumbnail {
+                } else if let thumbnail = model.library.thumbnails[url] {
                     Image(nsImage: thumbnail).resizable().scaledToFill()
                 } else {
                     ProgressView().controlSize(.small)
@@ -433,7 +271,7 @@ private struct WallpaperTile: View {
 }
 
 /// An error (red), quality warning (orange) or info (accent) message with details to copy.
-private struct NoticeCard: View {
+struct NoticeCard: View {
     let notice: Library.Notice
     /// Shown as an "Upscale" button for low-resolution warnings.
     let upscale: (() -> Void)?
@@ -493,16 +331,13 @@ private struct NoticeCard: View {
     }
 }
 
-/// Click to choose videos; in the window, also a drag & drop target that lights up while hovered.
-private struct DropZone: View {
+/// Click to choose videos. In the window, files can be dropped anywhere (see `WindowView`).
+struct DropZone: View {
     let isLarge: Bool
     let acceptsDrops: Bool
-    let isTargeted: Bool
     let add: () -> Void
 
-    private var title: String {
-        isTargeted ? "Release to add" : acceptsDrops ? "Drop videos here" : "Add a video to get started"
-    }
+    private var title: String { acceptsDrops ? "Drop videos here" : "Add a video to get started" }
     private var subtitle: String {
         acceptsDrops
             ? "or click to choose — any video is converted automatically"
@@ -531,14 +366,10 @@ private struct DropZone: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isTargeted ? Color.accentColor.opacity(0.12) : Color.clear)
-            )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: [6]))
-                    .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [6]))
+                    .foregroundStyle(.tertiary)
             )
             .contentShape(Rectangle())
         }
@@ -547,7 +378,6 @@ private struct DropZone: View {
     }
 
     private var icon: some View {
-        Image(systemName: isTargeted ? "arrow.down.circle.fill" : "square.and.arrow.down.on.square")
-            .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+        Image(systemName: "square.and.arrow.down.on.square").foregroundStyle(.secondary)
     }
 }

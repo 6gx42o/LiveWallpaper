@@ -56,7 +56,7 @@ final class EditorModel: ObservableObject {
 }
 
 /// Shows the player framed exactly like the wallpaper (Fill/Fit + position).
-private final class PreviewNSView: NSView {
+final class PreviewNSView: NSView {
     let playerLayer = AVPlayerLayer()
     var video = CGSize.zero
     var edits = Edits() { didSet { needsLayout = true } }
@@ -81,7 +81,7 @@ private final class PreviewNSView: NSView {
     }
 }
 
-private struct PlayerPreview: NSViewRepresentable {
+struct PlayerPreview: NSViewRepresentable {
     let player: AVPlayer
     let video: CGSize
     let edits: Edits
@@ -93,6 +93,7 @@ private struct PlayerPreview: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PreviewNSView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
         view.video = video
         view.edits = edits
     }

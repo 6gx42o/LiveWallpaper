@@ -48,15 +48,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.performClose(nil)
         if mainWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false
             )
             window.title = "LiveWallpaper"
-            let host = NSHostingController(rootView: PanelView(model: model, isWindow: true))
+            window.toolbarStyle = .unified
+            let host = NSHostingController(rootView: WindowView(model: model))
             host.sizingOptions = .minSize // let the user resize; SwiftUI only enforces the minimum
+            host.sceneBridgingOptions = [.title, .toolbars] // SwiftUI's title and toolbar drive the window's
             window.contentViewController = host
-            window.setContentSize(NSSize(width: 980, height: 640))
+            window.setContentSize(NSSize(width: 1040, height: 700))
             window.collectionBehavior = [.fullScreenPrimary, .moveToActiveSpace] // open on the Space you're using
             window.isReleasedWhenClosed = false
             window.delegate = self
@@ -82,18 +84,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func makeMainMenu() -> NSMenu {
         let main = NSMenu()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showTab(_:)), keyEquivalent: ",").tag = AppModel.Tab.allCases.firstIndex(of: .settings)!
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide LiveWallpaper", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit LiveWallpaper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "Add Video…", action: #selector(addVideos), keyEquivalent: "o").target = self
+        fileMenu.addItem(withTitle: "Add Video…", action: #selector(addVideos), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Add from YouTube…", action: #selector(addFromYouTube), keyEquivalent: "l")
+        fileMenu.addItem(withTitle: "Find Videos on This Mac…", action: #selector(findVideos), keyEquivalent: "F") // ⇧⌘F
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let viewMenu = NSMenu(title: "View")
+        for (index, tab) in AppModel.Tab.allCases.enumerated() where tab != .settings {
+            viewMenu.addItem(withTitle: tab.rawValue, action: #selector(showTab(_:)), keyEquivalent: "\(index + 1)").tag = index
+        }
+        let wallpaperMenu = NSMenu(title: "Wallpaper")
+        let pause = wallpaperMenu.addItem(withTitle: "Pause", action: #selector(togglePause), keyEquivalent: "p")
+        pause.keyEquivalentModifierMask = [.option, .command]
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         let fullScreen = windowMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.control, .command]
-        for (title, menu) in [("LiveWallpaper", appMenu), ("File", fileMenu), ("Window", windowMenu)] {
+        for menu in [appMenu, fileMenu, viewMenu, wallpaperMenu] {
+            for item in menu.items where item.action.map({ responds(to: $0) }) == true { item.target = self }
+        }
+        for (title, menu) in [("LiveWallpaper", appMenu), ("File", fileMenu), ("View", viewMenu), ("Wallpaper", wallpaperMenu), ("Window", windowMenu)] {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.submenu = menu
             main.addItem(item)
@@ -102,13 +119,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return main
     }
 
-    @objc private func addVideos() { model.addVideos() }
+    @objc private func addVideos() {
+        if model.tab == .upscale { model.studio.choose() } else { model.addVideos() }
+    }
+    @objc private func addFromYouTube() { model.tab = .wallpapers; model.addFromYouTube() }
+    @objc private func findVideos() { model.tab = .wallpapers; model.startScan() }
+    @objc private func togglePause() { model.gate.userPaused.toggle() }
+
+    @objc private func showTab(_ sender: NSMenuItem) {
+        model.tab = AppModel.Tab.allCases[sender.tag]
+        showMainWindow()
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(togglePause):
+            item.title = model.gate.userPaused ? "Resume" : "Pause"
+            return model.current != nil && !model.isCurrentBroken
+        case #selector(showTab(_:)):
+            item.state = mainWindow?.isVisible == true && AppModel.Tab.allCases[item.tag] == model.tab ? .on : .off
+            return true
+        default:
+            return true
+        }
+    }
 }
 
 /// The main window forwards drag & drop to its delegate (anywhere in the window).
 extension AppDelegate: NSDraggingDestination {
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard model.tab != .memory else { return [] }
+        guard model.tab == .wallpapers || model.tab == .upscale else { return [] }
         model.isDropTargeted = true
         return .copy
     }

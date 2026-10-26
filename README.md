@@ -32,8 +32,9 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - *is broken* — a damaged file that neither macOS nor ffmpeg can read
   - *couldn't be converted* — decoded but failed to re-encode or save
   - damaged videos already in the library, and videos that fail during playback, show a red *Broken* tile
-- **Menu bar panel and a full app window** — same controls, one compact and one roomy (resizable, full-screen capable).
-- **Settings:** play in Low Power Mode, pause when the desktop is covered, open at login.
+- **Menu bar panel and a full Mac window.** The panel is for quick picks. The window has a sidebar (Wallpapers, Upscale, Memory, Settings), each section's actions in the toolbar, and live miniatures of your home screen (the wallpaper actually playing) and lock screen (with the clock drawn over it). It's resizable and full-screen capable.
+- **Keyboard shortcuts:** ⌘1–⌘3 switch sections, ⌘, opens Settings, ⌘O adds a video, ⌘L adds from YouTube, ⇧⌘F finds videos on this Mac, ⌥⌘P pauses or resumes.
+- **Settings:** play in Low Power Mode, pause when the desktop is covered, open at login, resolution, upscaler.
 
 ## Why it's light on battery
 
@@ -97,7 +98,8 @@ macOS doesn't let apps draw on the lock screen — only Apple's own aerial wallp
 Sources/LiveWallpaper/
   main.swift             app entry, menu bar panel & window
   AppModel.swift         state: home/lock wallpapers, editor, upscaling, settings
-  PanelView.swift        SwiftUI UI used by both the panel and the window
+  WindowView.swift       the window: sidebar, toolbar, home/lock previews, Settings
+  PanelView.swift        the menu bar panel + shared tile, notice and drop-zone views
   EditorView.swift       trim / speed / framing / lock frame / quality editor
   VideoInfo.swift        video facts, quality checks against the display, edit model
   Upscaler.swift         upscaling engines (Real-ESRGAN, Apple Super Resolution, Lanczos) + frame pipeline

@@ -1,4 +1,6 @@
+import AVFoundation
 import AppKit
+import ImageIO
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
@@ -17,8 +19,18 @@ final class AppModel: ObservableObject {
     /// The open "find videos on this Mac" scan, if any.
     private(set) var scanner: VideoScanner? { didSet { objectWillChange.send() } }
 
-    /// Window tabs.
-    enum Tab: String, CaseIterable { case wallpapers = "Wallpapers", upscale = "Upscale", memory = "Memory" }
+    /// Window sections (the sidebar).
+    enum Tab: String, CaseIterable {
+        case wallpapers = "Wallpapers", upscale = "Upscale", memory = "Memory", settings = "Settings"
+        var symbol: String {
+            switch self {
+            case .wallpapers: "photo.on.rectangle"
+            case .upscale: "sparkles"
+            case .memory: "memorychip"
+            case .settings: "gearshape"
+            }
+        }
+    }
     var tab: Tab = .wallpapers { didSet { objectWillChange.send() } }
     let memory = MemoryCleaner()
     let studio = UpscaleStudio()
@@ -99,6 +111,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The main display's wallpaper player, shown live in the window (no second decoder).
+    var previewPlayer: AVPlayer? {
+        windows.first { $0.screen == NSScreen.main }?.player ?? windows.first?.player
+    }
+
+    /// What macOS shows on the lock screen: the main display's desktop picture, scaled down.
+    var lockPreview: NSImage? = AppModel.loadLockPreview() { didSet { objectWillChange.send() } }
+
+    private static func loadLockPreview() -> NSImage? {
+        guard let screen = NSScreen.main, let url = NSWorkspace.shared.desktopImageURL(for: screen),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 900,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+              ] as CFDictionary)
+        else { return nil }
+        return NSImage(cgImage: image, size: .zero)
+    }
+
     var isCurrentBroken: Bool { current.map { library.broken[$0] != nil } ?? false }
 
     var status: (text: String, color: Color) {
@@ -118,6 +150,7 @@ final class AppModel: ObservableObject {
         guard let url else {
             lockScreen = nil
             LockScreen.restore()
+            lockPreview = Self.loadLockPreview()
             return
         }
         guard library.broken[url] == nil else { return }
@@ -131,6 +164,7 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 try await LockScreen.apply(video: url, edits: edits)
+                lockPreview = Self.loadLockPreview()
             } catch {
                 log.error("lock screen: \(error.localizedDescription, privacy: .public)")
                 library.post(.init(title: "Couldn't set the lock screen wallpaper",
@@ -410,5 +444,6 @@ final class AppModel: ObservableObject {
         }
         gate.windows = windows
         loadCurrent()
+        objectWillChange.send() // the preview follows the new player
     }
 }

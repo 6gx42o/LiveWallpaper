@@ -105,11 +105,8 @@ struct UpscaleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Upscale a video").font(.title3.weight(.semibold))
-                Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to Movies › LiveWallpaper Upscaled.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
+            Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to Movies › LiveWallpaper Upscaled.")
+                .font(.callout).foregroundStyle(.secondary)
 
             if let source = studio.source {
                 HStack(spacing: 12) {

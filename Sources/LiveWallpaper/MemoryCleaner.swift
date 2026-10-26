@@ -149,8 +149,7 @@ struct MemoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Memory").font(.title3.weight(.semibold))
-                Text("\(SystemInfo.chip) · \(SystemInfo.bytes(cleaner.total)) RAM").font(.callout).foregroundStyle(.secondary)
+                Text("\(SystemInfo.chip) · \(SystemInfo.bytes(cleaner.total)) RAM").font(.headline)
                 ProgressView(value: Double(cleaner.used), total: Double(cleaner.total))
                     .tint(pressureColor)
                 HStack {
