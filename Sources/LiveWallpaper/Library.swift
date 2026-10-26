@@ -3,17 +3,26 @@ import AVFoundation
 import UniformTypeIdentifiers
 import os
 
-/// Imported videos are converted to muted HEVC .mp4 (hardware-decoded, capped near screen size)
+/// Imported videos are converted to muted HEVC .mp4 (hardware-decoded, original resolution up to 4K/display size)
 /// and stored in Application Support, where they become selectable wallpapers.
 @MainActor
 final class Library {
-    /// Why an import failed, written for the user: a headline, a plain reason, and the technical
-    /// detail (error text, ffmpeg output) to help diagnose it. Shown until dismissed.
-    struct ImportFailure: Error, Identifiable {
+    /// A message for the user: an error (import failed), a warning (quality) or info (finished upscaling).
+    /// Has a headline, a plain reason, technical detail to help diagnose it, and optionally a video to upscale.
+    struct Notice: Error, Identifiable {
+        enum Kind { case error, warning, info }
         let id = UUID()
+        var kind = Kind.error
         let title: String
         let reason: String
         var details: String?
+        /// Offer an "Upscale" button for this library video.
+        var upscale: URL?
+    }
+
+    private enum Job {
+        case importFile(URL)
+        case upscale(URL, allowModelDownload: Bool)
     }
 
     static let supportedFormats = "MP4, MOV and M4V work out of the box. With ffmpeg installed: WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP."
@@ -27,14 +36,22 @@ final class Library {
     let dir: URL
     private(set) var videos: [URL] = []
     private(set) var thumbnails: [URL: NSImage] = [:]
+    private(set) var infos: [URL: VideoInfo] = [:]
     /// Library videos that can't be played, with a user-facing reason.
     private(set) var broken: [URL: String] = [:]
+    /// The running job's label and progress.
     private(set) var converting: (name: String, fraction: Double?)?
-    private(set) var failures: [ImportFailure] = []
+    private(set) var notices: [Notice] = []
     var onChange: (() -> Void)?
     var onConverted: ((URL) -> Void)?
+    /// (original, upscaled copy)
+    var onUpscaled: ((URL, URL) -> Void)?
     private var inspecting: Set<URL> = []
-    private var queue: [URL] = []
+    private var queue: [Job] = []
+    private var allEdits: [String: Edits] = {
+        guard let data = UserDefaults.standard.data(forKey: "edits") else { return [:] }
+        return (try? JSONDecoder().decode([String: Edits].self, from: data)) ?? [:]
+    }()
     private var busy = false
     private static let tmpSuffix = ".tmp.mp4"
     private let log = Logger(subsystem: "LiveWallpaper", category: "library")
@@ -56,6 +73,7 @@ final class Library {
             .filter { $0.pathExtension == "mp4" && !$0.lastPathComponent.hasSuffix(Self.tmpSuffix) }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         thumbnails = thumbnails.filter { videos.contains($0.key) }
+        infos = infos.filter { videos.contains($0.key) }
         broken = broken.filter { videos.contains($0.key) }
         for url in videos where thumbnails[url] == nil && broken[url] == nil && !inspecting.contains(url) {
             inspect(url)
@@ -68,9 +86,31 @@ final class Library {
         onChange?()
     }
 
-    func dismissFailure(_ failure: ImportFailure) {
-        failures.removeAll { $0.id == failure.id }
+    func post(_ notice: Notice) {
+        notices.append(notice)
         onChange?()
+    }
+
+    func dismiss(_ notice: Notice) {
+        notices.removeAll { $0.id == notice.id }
+        onChange?()
+    }
+
+    func edits(for url: URL) -> Edits { allEdits[url.lastPathComponent] ?? Edits() }
+
+    func setEdits(_ edits: Edits, for url: URL) {
+        allEdits[url.lastPathComponent] = edits == Edits() ? nil : edits
+        saveEdits()
+        onChange?()
+    }
+
+    private func saveEdits() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(allEdits), forKey: "edits")
+    }
+
+    /// How a library video will look on the current display with its edits.
+    func issues(for url: URL) -> [QualityIssue] {
+        infos[url]?.issues(on: Display.pixelSize, edits: edits(for: url)) ?? []
     }
 
     private func inspect(_ url: URL) {
@@ -82,6 +122,7 @@ final class Library {
             do {
                 let (image, _) = try await generator.image(at: .zero)
                 thumbnails[url] = NSImage(cgImage: image, size: .zero)
+                infos[url] = try await VideoInfo.load(url)
             } catch {
                 log.error("broken \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 broken[url] = "This video is damaged and can't be played. Remove it and add the original again."
@@ -92,13 +133,32 @@ final class Library {
     }
 
     func add(_ urls: [URL]) {
-        queue += urls
+        queue += urls.map(Job.importFile)
+        next()
+    }
+
+    /// Queues an upscaled copy of a library video that covers the display.
+    func upscale(_ url: URL, allowModelDownload: Bool) {
+        queue.append(.upscale(url, allowModelDownload: allowModelDownload))
         next()
     }
 
     func remove(_ url: URL) {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        allEdits[url.lastPathComponent] = nil
+        saveEdits()
         reload()
+    }
+
+    /// A free "<name>.mp4" (or "<name> 2.mp4"…) in the library.
+    private func freeURL(for name: String) -> URL {
+        var out = dir.appending(path: name + ".mp4")
+        var n = 2
+        while FileManager.default.fileExists(atPath: out.path) {
+            out = dir.appending(path: "\(name) \(n).mp4")
+            n += 1
+        }
+        return out
     }
 
     private func contents() -> [URL] {
@@ -106,20 +166,20 @@ final class Library {
     }
 
     /// Rejects anything that can't be a video before spending time converting it.
-    private func compatibilityProblem(_ src: URL) -> ImportFailure? {
+    private func compatibilityProblem(_ src: URL) -> Notice? {
         let file = src.lastPathComponent
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: src.path, isDirectory: &isDirectory) else {
-            return ImportFailure(title: "“\(file)” wasn't found", reason: "The file may have been moved or deleted.", details: src.path)
+            return Notice(title: "“\(file)” wasn't found", reason: "The file may have been moved or deleted.", details: src.path)
         }
         if isDirectory.boolValue {
-            return ImportFailure(title: "“\(file)” is a folder", reason: "Drop the video files themselves, not a folder. " + Self.supportedFormats)
+            return Notice(title: "“\(file)” is a folder", reason: "Drop the video files themselves, not a folder. " + Self.supportedFormats)
         }
         let ext = src.pathExtension.lowercased()
         let isMovie = UTType(filenameExtension: ext)?.conforms(to: .movie) ?? false
         if Self.ffmpegExtensions.contains(ext) {
             if Self.ffmpegPath == nil {
-                return ImportFailure(
+                return Notice(
                     title: "“\(file)” isn't compatible yet",
                     reason: "macOS can't play .\(ext) files on its own. Install ffmpeg (brew install ffmpeg) and add it again — it will then be converted automatically.",
                     details: Self.supportedFormats
@@ -131,55 +191,120 @@ final class Library {
             let what = ext.isEmpty
                 ? "This file has no extension and isn't a video."
                 : "This is a .\(ext) file" + (UTType(filenameExtension: ext)?.localizedDescription.map { " (\($0))" } ?? "") + ", not a video."
-            return ImportFailure(title: "“\(file)” isn't compatible", reason: what + " " + Self.supportedFormats)
+            return Notice(title: "“\(file)” isn't compatible", reason: what + " " + Self.supportedFormats)
         }
         return nil
     }
 
     private func next() {
         guard !busy, !queue.isEmpty else { return }
-        let src = queue.removeFirst()
+        switch queue.removeFirst() {
+        case .importFile(let src): runImport(src)
+        case .upscale(let url, let allowModelDownload): runUpscale(url, allowModelDownload: allowModelDownload)
+        }
+    }
+
+    private func finishJob() {
+        converting = nil
+        busy = false
+        onChange?()
+        next()
+    }
+
+    private func runImport(_ src: URL) {
         if let problem = compatibilityProblem(src) {
             log.error("rejected \(src.lastPathComponent, privacy: .public): \(problem.title, privacy: .public)")
-            failures.append(problem)
+            notices.append(problem)
             onChange?()
             return next()
         }
         busy = true
         let name = src.deletingPathExtension().lastPathComponent
-        var out = dir.appending(path: name + ".mp4")
-        var n = 2
-        while FileManager.default.fileExists(atPath: out.path) {
-            out = dir.appending(path: "\(name) \(n).mp4")
-            n += 1
-        }
+        let out = freeURL(for: name)
         let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
-        setProgress(name, nil)
+        setProgress("Converting “\(name)”", nil)
 
         Task {
             do {
                 try await convert(src, to: tmp, name: name)
                 try FileManager.default.moveItem(at: tmp, to: out)
                 log.notice("converted \(src.lastPathComponent, privacy: .public) -> \(out.lastPathComponent, privacy: .public)")
+                await warnAboutQuality(source: src, converted: out)
                 reload()
                 onConverted?(out)
-            } catch let failure as ImportFailure {
+            } catch let notice as Notice {
                 try? FileManager.default.removeItem(at: tmp)
-                log.error("failed \(src.lastPathComponent, privacy: .public): \(failure.reason, privacy: .public) \(failure.details ?? "", privacy: .public)")
-                failures.append(failure)
+                log.error("failed \(src.lastPathComponent, privacy: .public): \(notice.reason, privacy: .public) \(notice.details ?? "", privacy: .public)")
+                notices.append(notice)
             } catch {
                 try? FileManager.default.removeItem(at: tmp)
                 log.error("failed \(src.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                failures.append(ImportFailure(
+                notices.append(Notice(
                     title: "“\(src.lastPathComponent)” couldn't be added",
                     reason: "The video was converted but couldn't be saved. Check that your disk isn't full.",
                     details: error.localizedDescription
                 ))
             }
-            converting = nil
-            busy = false
-            onChange?()
-            next()
+            finishJob()
+        }
+    }
+
+    /// After import: tells the user if the source will look bad on their display (resolution, aspect, bitrate, fps).
+    private func warnAboutQuality(source: URL, converted: URL) async {
+        // The original has the real bitrate; formats only ffmpeg reads fall back to the converted file.
+        let info: VideoInfo?
+        if let original = try? await VideoInfo.load(source) { info = original } else { info = try? await VideoInfo.load(converted) }
+        guard let info else { return }
+        let issues = info.issues(on: Display.pixelSize, includeSource: true)
+        guard !issues.isEmpty else { return }
+        let hasWarning = issues.contains { $0.severity == .warning }
+        notices.append(Notice(
+            kind: hasWarning ? .warning : .info,
+            title: hasWarning ? "“\(source.lastPathComponent)” may not look great" : "“\(source.lastPathComponent)” added — heads up",
+            reason: issues.map { "• " + $0.text }.joined(separator: "\n"),
+            details: "Source: \(info.resolutionText), \(Int(info.fps.rounded())) fps, \(String(format: "%.1f", info.bitrate / 1_000_000)) Mbps · Display: \(Int(Display.pixelSize.width))×\(Int(Display.pixelSize.height))",
+            upscale: issues.contains { $0.isLowResolution && $0.severity == .warning } ? converted : nil
+        ))
+    }
+
+    private func runUpscale(_ url: URL, allowModelDownload: Bool) {
+        busy = true
+        let name = url.deletingPathExtension().lastPathComponent
+        setProgress("Upscaling “\(name)”", nil)
+        Task {
+            do {
+                let info = try await VideoInfo.load(url)
+                let target = Upscaler.targetSize(for: info.size, display: Display.pixelSize)
+                guard target.width > info.size.width else {
+                    throw Notice(kind: .info, title: "“\(name)” is already sharp enough",
+                                 reason: "It already covers your display at \(info.resolutionText), so there's nothing to upscale.")
+                }
+                let out = freeURL(for: "\(name) (Upscaled)")
+                let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                let result = try await Upscaler.upscale(url, to: tmp, target: target, allowModelDownload: allowModelDownload) { label, fraction in
+                    self.setProgress(label, fraction)
+                }
+                try FileManager.default.moveItem(at: tmp, to: out)
+                allEdits[out.lastPathComponent] = allEdits[url.lastPathComponent]
+                saveEdits()
+                log.notice("upscaled \(url.lastPathComponent, privacy: .public) -> \(out.lastPathComponent, privacy: .public) via \(result.method.name, privacy: .public)")
+                notices.append(Notice(
+                    kind: .info,
+                    title: "Upscaled “\(name)” to \(Int(target.width))×\(Int(target.height))",
+                    reason: "Used \(result.method.name). The original is kept; the upscaled copy is now in your library.",
+                    details: result.fallbackReason.map { "Super Resolution wasn't used: \($0)" }
+                ))
+                reload()
+                onUpscaled?(url, out)
+            } catch let notice as Notice {
+                notices.append(notice)
+            } catch {
+                log.error("upscale failed \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                notices.append(Notice(title: "Couldn't upscale “\(name)”", reason: "Upscaling failed, so the original is unchanged.",
+                                      details: error.localizedDescription))
+            }
+            finishJob()
         }
     }
 
@@ -188,10 +313,8 @@ final class Library {
         onChange?()
     }
 
-    /// Largest connected screen width in pixels; picks the export ceiling.
-    private var maxPixelWidth: CGFloat {
-        NSScreen.screens.map { $0.frame.width * $0.backingScaleFactor }.max() ?? 1920
-    }
+    /// Longest edge we keep: 4K, or the display if it's bigger. Anything larger can't be seen and costs battery.
+    private var maxEdge: CGFloat { max(3840, Display.pixelSize.width, Display.pixelSize.height) }
 
     private func convert(_ src: URL, to dst: URL, name: String) async throws {
         let file = src.lastPathComponent
@@ -200,7 +323,7 @@ final class Library {
         } catch let avError {
             log.notice("AVFoundation export failed (\(avError.localizedDescription, privacy: .public)); trying ffmpeg")
             guard let ffmpeg = Self.ffmpegPath else {
-                throw ImportFailure(
+                throw Notice(
                     title: "“\(file)” couldn't be converted",
                     reason: "The file looks damaged, or uses a codec macOS can't decode. Installing ffmpeg (brew install ffmpeg) lets LiveWallpaper try harder.",
                     details: "macOS: \(avError.localizedDescription)"
@@ -213,7 +336,7 @@ final class Library {
             do {
                 try await decodeWithFFmpeg(ffmpeg, src, to: intermediate)
             } catch {
-                throw ImportFailure(
+                throw Notice(
                     title: "“\(file)” is broken",
                     reason: "Neither macOS nor ffmpeg could read a video from it — the file is damaged or isn't really a video.",
                     details: "macOS: \(avError.localizedDescription)\nffmpeg: \(error.localizedDescription)"
@@ -223,7 +346,7 @@ final class Library {
             do {
                 try await exportWithAVFoundation(intermediate, to: dst, name: name)
             } catch {
-                throw ImportFailure(
+                throw Notice(
                     title: "“\(file)” couldn't be converted",
                     reason: "It was decoded, but re-encoding it for playback failed.",
                     details: error.localizedDescription
@@ -246,13 +369,15 @@ final class Library {
         try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: .zero)
         videoTrack.preferredTransform = transform
 
-        let preset = maxPixelWidth > 1920 ? AVAssetExportPresetHEVC3840x2160 : AVAssetExportPresetHEVC1920x1080
+        // Keep the original resolution at the highest HEVC quality; only shrink sources larger than we can show.
+        let natural = try await track.load(.naturalSize)
+        let preset = max(natural.width, natural.height) > maxEdge ? AVAssetExportPresetHEVC3840x2160 : AVAssetExportPresetHEVCHighestQuality
         guard let session = AVAssetExportSession(asset: comp, presetName: preset) else {
             throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "HEVC export isn't available on this Mac."])
         }
         let watcher = Task { [weak self] in
             for await state in session.states(updateInterval: 0.5) {
-                if case .exporting(let p) = state { self?.setProgress(name, p.fractionCompleted) }
+                if case .exporting(let p) = state { self?.setProgress("Converting “\(name)”", p.fractionCompleted) }
             }
         }
         defer { watcher.cancel() }
@@ -260,14 +385,15 @@ final class Library {
     }
 
     private func decodeWithFFmpeg(_ ffmpeg: String, _ src: URL, to dst: URL) async throws {
-        let width = maxPixelWidth > 1920 ? 3840 : 1920
+        let edge = Int(maxEdge)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpeg)
         // Arguments go straight to execve (no shell), so file names can't inject anything.
         process.arguments = [
             "-nostdin", "-v", "error", "-y", "-i", src.path,
-            "-an", "-vf", "scale='min(iw,\(width))':-2",
-            "-c:v", "prores_ks", "-profile:v", "0", "-f", "mov", dst.path,
+            // ProRes 422 HQ keeps quality for the final HEVC encode; only oversized sources are scaled down.
+            "-an", "-vf", "scale='if(gt(iw,ih),min(iw,\(edge)),-2)':'if(gt(iw,ih),-2,min(ih,\(edge)))'",
+            "-c:v", "prores_ks", "-profile:v", "3", "-f", "mov", dst.path,
         ]
         let stderr = Pipe()
         process.standardError = stderr

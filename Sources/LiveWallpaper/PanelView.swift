@@ -32,7 +32,7 @@ struct PanelView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 Divider()
-                library
+                ScrollView { library.padding(.trailing, 4) }
             }
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -52,12 +52,25 @@ struct PanelView: View {
             .background(Color.secondary.opacity(0.06))
         }
         .frame(minWidth: 760, minHeight: 500)
+        .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
+            if let editor = model.editor {
+                EditorView(
+                    editor: editor,
+                    upscaleMethod: model.upscaleMethod(for: editor.url).name,
+                    upscale: { model.upscale(editor.url) },
+                    useForLockScreen: { model.useEditorFrameForLockScreen() },
+                    close: { model.closeEditor(save: $0) }
+                )
+            }
+        }
     }
 
     private var quitButton: some View {
         Button("Quit LiveWallpaper") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
+
+    private func name(_ url: URL?) -> String? { url?.deletingPathExtension().lastPathComponent }
 
     // MARK: Header
 
@@ -76,6 +89,23 @@ struct PanelView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("status")
                 }
+                HStack(spacing: 10) {
+                    Label(name(model.current) ?? "None", systemImage: "house.fill")
+                        .help("Home screen wallpaper (plays behind your desktop icons)")
+                    HStack(spacing: 3) {
+                        Label(name(model.lockScreen) ?? "None", systemImage: "lock.fill")
+                        if model.lockScreen != nil {
+                            Button { model.setLockScreen(nil) } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain)
+                                .help("Remove the lock screen wallpaper and restore your own picture")
+                                .accessibilityLabel("Remove lock screen wallpaper")
+                        }
+                    }
+                    .help("Lock screen wallpaper (a still frame — macOS doesn't allow video on the lock screen)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
             Spacer()
             if !isWindow {
@@ -128,10 +158,14 @@ struct PanelView: View {
                 )
             }
             if let converting = lib.converting {
-                ConvertingCard(name: converting.name, fraction: converting.fraction)
+                ConvertingCard(title: converting.name, fraction: converting.fraction)
             }
-            ForEach(lib.failures) { failure in
-                BrokenCard(failure: failure) { model.library.dismissFailure(failure) }
+            ForEach(lib.notices) { notice in
+                NoticeCard(
+                    notice: notice,
+                    upscale: notice.upscale.map { url in { model.upscale(url); model.library.dismiss(notice) } },
+                    dismiss: { model.library.dismiss(notice) }
+                )
             }
 
             if !lib.videos.isEmpty {
@@ -144,14 +178,19 @@ struct PanelView: View {
                             name: url.deletingPathExtension().lastPathComponent,
                             thumbnail: lib.thumbnails[url],
                             brokenReason: lib.broken[url],
-                            isSelected: url == model.current,
+                            qualityWarning: lib.issues(for: url).first { $0.severity == .warning }?.text,
+                            isHome: url == model.current,
+                            isLock: url == model.lockScreen,
+                            canEdit: lib.infos[url] != nil,
                             select: { model.select(url) },
+                            toggleLock: { model.setLockScreen(url == model.lockScreen ? nil : url) },
+                            edit: { model.edit(url) },
                             remove: { model.remove(url) }
                         )
                     }
                 }
                 if isWindow {
-                    ScrollView { grid.padding(2) }
+                    grid.padding(2) // the whole column scrolls
                 } else if lib.videos.count > 4 {
                     ScrollView { grid.padding(2) }.frame(height: 250)
                 } else {
@@ -213,8 +252,13 @@ private struct WallpaperTile: View {
     let name: String
     let thumbnail: NSImage?
     let brokenReason: String?
-    let isSelected: Bool
+    let qualityWarning: String?
+    let isHome: Bool
+    let isLock: Bool
+    let canEdit: Bool
     let select: () -> Void
+    let toggleLock: () -> Void
+    let edit: () -> Void
     let remove: () -> Void
 
     var body: some View {
@@ -222,33 +266,77 @@ private struct WallpaperTile: View {
             Button(action: select) { preview }
                 .buttonStyle(.plain)
                 .disabled(brokenReason != nil)
-                .accessibilityLabel(brokenReason == nil ? "Use \(name)" : "\(name) is broken")
+                .accessibilityLabel(brokenReason == nil ? "Use \(name) as home screen wallpaper" : "\(name) is broken")
+                .help(brokenReason ?? "Click to use as your home screen wallpaper")
                 .overlay(alignment: .topTrailing) {
-                    Button(action: remove) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 10, weight: .semibold))
-                            .padding(5)
-                            .background(.regularMaterial, in: Circle())
+                    Button(action: remove) { circleIcon("trash") }
+                        .buttonStyle(.plain)
+                        .padding(5)
+                        .help("Move to Trash")
+                        .accessibilityLabel("Remove \(name)")
+                }
+                .overlay(alignment: .topLeading) {
+                    HStack(spacing: 4) {
+                        if isHome { badge("Home", "house.fill") }
+                        if isLock { badge("Lock", "lock.fill") }
                     }
-                    .buttonStyle(.plain)
                     .padding(5)
-                    .help("Move to Trash")
-                    .accessibilityLabel("Remove \(name)")
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if let qualityWarning {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.black, .yellow)
+                            .padding(6)
+                            .help(qualityWarning)
+                            .accessibilityLabel("Quality warning: \(qualityWarning)")
+                    }
                 }
             HStack(spacing: 4) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                } else if brokenReason != nil {
+                if brokenReason != nil {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 }
                 Text(name).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 4)
+                if brokenReason == nil {
+                    Button(action: toggleLock) {
+                        Image(systemName: isLock ? "lock.fill" : "lock")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(isLock ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .help(isLock ? "Remove from lock screen" : "Use as lock screen wallpaper")
+                    .accessibilityLabel(isLock ? "Remove \(name) from lock screen" : "Use \(name) as lock screen")
+                    Button(action: edit) { Image(systemName: "slider.horizontal.3") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .disabled(!canEdit)
+                        .help("Edit: trim, speed, framing, lock screen frame, quality")
+                        .accessibilityLabel("Edit \(name)")
+                }
             }
             .font(.caption)
         }
-        .help(brokenReason ?? name)
         .contextMenu {
+            Button("Use as Home Screen", action: select).disabled(brokenReason != nil)
+            Button(isLock ? "Remove from Lock Screen" : "Use as Lock Screen", action: toggleLock).disabled(brokenReason != nil)
+            Button("Edit…", action: edit).disabled(!canEdit)
+            Divider()
             Button("Move to Trash", role: .destructive, action: remove)
         }
+    }
+
+    private func circleIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(5)
+            .background(.regularMaterial, in: Circle())
+    }
+
+    private func badge(_ text: String, _ symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(.regularMaterial, in: Capsule())
     }
 
     private var preview: some View {
@@ -273,21 +361,21 @@ private struct WallpaperTile: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isSelected ? 2.5 : 1)
+                    .strokeBorder(isHome ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isHome ? 2.5 : 1)
             )
             .contentShape(Rectangle())
     }
 }
 
 private struct ConvertingCard: View {
-    let name: String
+    let title: String
     let fraction: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "wand.and.stars")
-                Text("Converting “\(name)”").lineLimit(1).truncationMode(.middle)
+                Text(title).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if let fraction { Text("\(Int(fraction * 100))%").monospacedDigit().foregroundStyle(.secondary) }
             }
@@ -299,26 +387,49 @@ private struct ConvertingCard: View {
     }
 }
 
-private struct BrokenCard: View {
-    let failure: Library.ImportFailure
+/// An error (red), quality warning (orange) or info (accent) message with details to copy.
+private struct NoticeCard: View {
+    let notice: Library.Notice
+    /// Shown as an "Upscale" button for low-resolution warnings.
+    let upscale: (() -> Void)?
     let dismiss: () -> Void
+
+    private var color: Color {
+        switch notice.kind {
+        case .error: .red
+        case .warning: .orange
+        case .info: .accentColor
+        }
+    }
+    private var symbol: String {
+        switch notice.kind {
+        case .error, .warning: "exclamationmark.triangle.fill"
+        case .info: "info.circle.fill"
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Image(systemName: symbol).foregroundStyle(color)
             VStack(alignment: .leading, spacing: 4) {
-                Text(failure.title).font(.caption.weight(.semibold)).lineLimit(2).truncationMode(.middle)
-                Text(failure.reason).font(.caption).fixedSize(horizontal: false, vertical: true)
-                if let details = failure.details {
+                Text(notice.title).font(.caption.weight(.semibold)).lineLimit(2).truncationMode(.middle)
+                Text(notice.reason).font(.caption).fixedSize(horizontal: false, vertical: true)
+                if let details = notice.details {
                     Text(details)
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                Button("Copy details", action: copy)
-                    .buttonStyle(.link)
-                    .font(.caption)
+                HStack(spacing: 12) {
+                    if let upscale {
+                        Button(action: upscale) { Label("Upscale", systemImage: "sparkles") }
+                            .controlSize(.small)
+                    }
+                    Button("Copy details", action: copy)
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
             }
             Spacer(minLength: 4)
             Button(action: dismiss) { Image(systemName: "xmark").font(.caption) }
@@ -327,11 +438,11 @@ private struct BrokenCard: View {
                 .accessibilityLabel("Dismiss")
         }
         .padding(10)
-        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func copy() {
-        let text = [failure.title, failure.reason, failure.details].compactMap { $0 }.joined(separator: "\n")
+        let text = [notice.title, notice.reason, notice.details].compactMap { $0 }.joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }

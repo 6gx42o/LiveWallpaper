@@ -6,7 +6,11 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 
 ## Features
 
-- **Any video, converted automatically.** Add a `.mov`, `.mp4`, `.m4v` (or, with ffmpeg installed, `.webm`, `.mkv`, `.avi`…) and it's re-encoded to a muted, hardware-decodable HEVC file sized for your screen.
+- **Any video, converted automatically — at full quality.** Add a `.mov`, `.mp4`, `.m4v` (or, with ffmpeg installed, `.webm`, `.mkv`, `.avi`…) and it's re-encoded to a muted, hardware-decodable HEVC file at the highest quality, keeping its original resolution (only sources bigger than 4K / your display are scaled down).
+- **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
+- **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
+- **Upscaling.** Low-resolution videos can be upscaled to cover your display with **Apple's on-device Super Resolution** model (macOS 26+, Apple silicon; macOS downloads the model once, with your permission), falling back to high-quality Lanczos scaling.
+- **Editor.** Trim, playback speed, Fill/Fit framing with crop position, and the lock screen frame — all non-destructive, with a live preview shaped like your display.
 - **Sits behind your desktop icons** on every display and every Space.
 - **Pauses itself when it can't be seen:**
   - a full-screen app or maximized window covers the desktop
@@ -38,7 +42,7 @@ MP4, MOV and M4V work out of the box. With ffmpeg installed, WebM, MKV, AVI, FLV
 
 ## Requirements
 
-- macOS 15 Sequoia or later (Apple silicon recommended)
+- macOS 15 Sequoia or later (Apple silicon recommended; Super Resolution upscaling needs macOS 26)
 - Swift 6 toolchain — Xcode 16+ or the Command Line Tools (`xcode-select --install`)
 - Optional: [ffmpeg](https://ffmpeg.org) for formats macOS can't read natively (`brew install ffmpeg`)
 
@@ -56,9 +60,14 @@ open LiveWallpaper.app
 
 1. Click the ▶︎ icon in the menu bar (or open the app again to bring up its window).
 2. **Drag videos onto the window**, click the drop area / **Add Video** to pick files, or use Finder's *Open With → LiveWallpaper*. Conversion runs in the background with a progress bar.
-3. Click a thumbnail to make it your wallpaper. The 🗑 button moves a video to the Trash.
+3. Click a thumbnail to make it your **home screen** wallpaper. The 🔒 button under it makes it your **lock screen** wallpaper; ✕ next to the lock name in the header restores your own picture.
+4. The ⚙︎ (sliders) button opens the **editor**: trim, speed, framing, lock screen frame, quality report and **Upscale**. The 🗑 button moves a video to the Trash.
 
 Converted videos live in `~/Library/Application Support/LiveWallpaper/Videos/`.
+
+## About the lock screen
+
+macOS doesn't let apps draw on the lock screen — only Apple's own aerial wallpapers animate there. What it does show is your desktop picture, so LiveWallpaper saves a full-quality still of the frame you choose (framed like your wallpaper) and sets it as the desktop picture; on the home screen the video covers it. Your original picture is remembered and put back when you remove the lock screen wallpaper.
 
 ## How pausing works
 
@@ -69,6 +78,7 @@ Converted videos live in `~/Library/Application Support/LiveWallpaper/Videos/`.
 ## Known limitations
 
 - Maximizing or un-maximizing a window *without* switching apps isn't noticed until the next app or Space switch. Catching it without polling would require the Accessibility permission.
+- The lock screen shows a still frame, not video (a macOS restriction, see above).
 - The same video plays on every display.
 - Builds are ad-hoc signed, so on another Mac Gatekeeper will ask you to confirm the first launch (right-click → Open).
 
@@ -76,10 +86,15 @@ Converted videos live in `~/Library/Application Support/LiveWallpaper/Videos/`.
 
 ```
 Sources/LiveWallpaper/
-  main.swift             app entry, AppModel (state + settings), menu bar panel & window
+  main.swift             app entry, menu bar panel & window
+  AppModel.swift         state: home/lock wallpapers, editor, upscaling, settings
   PanelView.swift        SwiftUI UI used by both the panel and the window
+  EditorView.swift       trim / speed / framing / lock frame / quality editor
+  VideoInfo.swift        video facts, quality checks against the display, edit model
+  Upscaler.swift         Apple Super Resolution upscaling with Lanczos fallback
+  LockScreen.swift       lock screen still + restoring your own picture
   PlaybackGate.swift     all play/pause decisions
-  Library.swift          import → convert (AVFoundation, ffmpeg fallback) → thumbnails / broken detection
+  Library.swift          import → convert (AVFoundation, ffmpeg fallback) → analysis, edits, upscale jobs
   WallpaperWindow.swift  desktop-level window that loops the video
 Resources/AppIcon.icns   app icon (regenerate with scripts/make-icon.swift)
 build.sh                 builds LiveWallpaper.app

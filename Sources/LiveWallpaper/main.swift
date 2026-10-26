@@ -1,111 +1,5 @@
 import AppKit
-import ServiceManagement
 import SwiftUI
-import UniformTypeIdentifiers
-import os
-
-/// Owns playback, the library and settings; the panel UI observes it.
-@MainActor
-final class AppModel: ObservableObject {
-    let gate = PlaybackGate()
-    let library = Library()
-    var openWindow: (() -> Void)?
-    /// True while files are being dragged over a drop area (highlights it).
-    var isDropTargeted = false { didSet { objectWillChange.send() } }
-    private var windows: [WallpaperWindow] = []
-    private let log = Logger(subsystem: "LiveWallpaper", category: "app")
-
-    private(set) var current: URL? {
-        didSet {
-            UserDefaults.standard.set(current?.lastPathComponent, forKey: "wallpaper")
-            loadCurrent()
-        }
-    }
-
-    init() {
-        gate.onChange = { [unowned self] in objectWillChange.send() }
-        library.onChange = { [unowned self] in
-            // A wallpaper found to be broken after it was selected stops showing.
-            if let current, library.broken[current] != nil, windows.contains(where: \.hasVideo) { loadCurrent() }
-            objectWillChange.send()
-        }
-        library.onConverted = { [unowned self] url in if current == nil { current = url } }
-
-        let saved = UserDefaults.standard.string(forKey: "wallpaper")
-        current = library.videos.first { $0.lastPathComponent == saved }
-        buildWindows()
-        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [unowned self] _ in
-            MainActor.assumeIsolated { buildWindows() }
-        }
-    }
-
-    var isCurrentBroken: Bool { current.map { library.broken[$0] != nil } ?? false }
-
-    var status: (text: String, color: Color) {
-        if isCurrentBroken { return ("This wallpaper is broken", .red) }
-        if current == nil { return ("No wallpaper selected", .secondary) }
-        if gate.isPlaying { return ("Playing", .green) }
-        return (gate.status, .orange)
-    }
-
-    func select(_ url: URL) {
-        guard library.broken[url] == nil else { return }
-        current = url
-    }
-
-    func remove(_ url: URL) {
-        if url == current { current = nil }
-        library.remove(url)
-    }
-
-    func addVideos() {
-        NSApp.activate()
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.movie] + Library.ffmpegExtensions.compactMap { UTType(filenameExtension: $0) }
-        panel.allowsMultipleSelection = true
-        panel.message = "Choose videos to use as wallpapers. Any format is converted automatically."
-        if panel.runModal() == .OK { library.add(panel.urls) }
-    }
-
-    /// Imports files dropped on a drop area; incompatible ones are reported by the library.
-    func importDropped(_ providers: [NSItemProvider]) {
-        for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in self.library.add([url]) }
-            }
-        }
-    }
-
-    var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status != .notRegistered && SMAppService.mainApp.status != .notFound }
-        set {
-            do {
-                if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            } catch {
-                log.error("launch at login: \(error.localizedDescription, privacy: .public)")
-            }
-            objectWillChange.send()
-        }
-    }
-
-    var launchAtLoginNeedsApproval: Bool { SMAppService.mainApp.status == .requiresApproval }
-
-    private func loadCurrent() {
-        windows.forEach { $0.load(isCurrentBroken ? nil : current) }
-        gate.apply()
-    }
-
-    private func buildWindows() {
-        windows.forEach { $0.load(nil); $0.close() }
-        windows = NSScreen.screens.map(WallpaperWindow.init)
-        for w in windows {
-            w.onFailure = { [unowned self] url in library.markBroken(url) }
-        }
-        gate.windows = windows
-        loadCurrent()
-    }
-}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -163,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             host.sizingOptions = .minSize // let the user resize; SwiftUI only enforces the minimum
             window.contentViewController = host
             window.setContentSize(NSSize(width: 980, height: 640))
-            window.collectionBehavior = .fullScreenPrimary
+            window.collectionBehavior = [.fullScreenPrimary, .moveToActiveSpace] // open on the Space you're using
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.center()
