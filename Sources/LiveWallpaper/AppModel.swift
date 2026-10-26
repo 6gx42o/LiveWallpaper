@@ -16,6 +16,21 @@ final class AppModel: ObservableObject {
     private(set) var editor: EditorModel? { didSet { objectWillChange.send() } }
     /// The open "find videos on this Mac" scan, if any.
     private(set) var scanner: VideoScanner? { didSet { objectWillChange.send() } }
+
+    /// Window tabs.
+    enum Tab: String, CaseIterable { case wallpapers = "Wallpapers", upscale = "Upscale", memory = "Memory" }
+    var tab: Tab = .wallpapers { didSet { objectWillChange.send() } }
+    let memory = MemoryCleaner()
+    let studio = UpscaleStudio()
+    /// A model being downloaded from Settings / the model list.
+    private(set) var modelDownload: (engine: Upscaler.Engine, progress: TransferProgress)? { didSet { objectWillChange.send() } }
+    private var modelDownloadTask: Task<Void, Never>?
+
+    /// Setting: resolution wallpapers are judged and upscaled against (defaults to native).
+    var resolution: ResolutionChoice {
+        get { ResolutionChoice.current }
+        set { ResolutionChoice.current = newValue; objectWillChange.send() }
+    }
     /// Size of the downloaded Real-ESRGAN model; nil when it isn't downloaded.
     private(set) var realESRGANSize: Int64? = RealESRGAN.sizeOnDisk { didSet { objectWillChange.send() } }
     /// Size of Apple's (macOS-managed) model; nil when macOS hasn't downloaded it.
@@ -53,6 +68,10 @@ final class AppModel: ObservableObject {
 
     init() {
         gate.onChange = { [unowned self] in objectWillChange.send() }
+        studio.onFinished = { [unowned self] method in
+            refreshModelSizes()
+            if method == .realESRGAN, asksToDeleteModel, realESRGANSize != nil { askToKeepModel() }
+        }
         library.onChange = { [unowned self] in
             // New video info (size, duration) or a broken wallpaper changes what should be playing.
             loadCurrent()
@@ -164,29 +183,48 @@ final class AppModel: ObservableObject {
         guard let size = library.infos[url]?.size else { return }
         var allowDownload = false
         if Upscaler.needsModelDownload(engine: upscaler, video: size) {
-            NSApp.activate()
-            let alert = NSAlert()
-            switch upscaler {
-            case .realESRGAN:
-                alert.messageText = "Download the Real-ESRGAN model?"
-                alert.informativeText = "Upscaling uses the open-source Real-ESRGAN model (\(UpscalerModel.sizeText(RealESRGAN.downloadSize)), the official file from github.com/xinntao/Real-ESRGAN). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
-            default:
-                alert.messageText = "Download Apple's upscaling model?"
-                alert.informativeText = "Apple Super Resolution needs a model that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose Real-ESRGAN in Settings for a model you can delete."
-            }
-            alert.addButton(withTitle: "Download & Upscale")
-            alert.addButton(withTitle: "Use Basic Upscaling")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn: allowDownload = true
-            case .alertSecondButtonReturn: allowDownload = false
-            default: return
-            }
+            guard let answer = ModelConsent.ask(for: upscaler) else { return }
+            allowDownload = answer
         }
         library.upscale(url, allowModelDownload: allowDownload)
     }
 
     // MARK: Upscaling model
+
+    /// Downloads a model now (the Download button), showing size, time left and a progress bar.
+    func downloadModel(_ engine: Upscaler.Engine) {
+        guard modelDownload == nil, engine != .basic else { return }
+        let title = engine == .realESRGAN ? "Downloading the Real-ESRGAN model" : "Downloading Apple's upscaling model"
+        modelDownload = (engine, TransferProgress(title: title, totalBytes: ModelAdvisor.downloadSize(engine)))
+        modelDownloadTask = Task {
+            do {
+                switch engine {
+                case .realESRGAN:
+                    try await RealESRGAN.download { received, total in
+                        Task { @MainActor in self.updateModelDownload(Double(received) / Double(total), received, total) }
+                    }
+                case .appleSuperResolution:
+                    guard #available(macOS 26.0, *) else { throw RealESRGAN.failure("Apple Super Resolution needs macOS 26 or later.") }
+                    try await Upscaler.downloadAppleModel { fraction, received, total in self.updateModelDownload(fraction, received, total) }
+                case .basic: break
+                }
+                library.post(.init(kind: .info, title: "Downloaded the \(engine.title) model", reason: "It's ready — upscaling won't need to download anything."))
+            } catch {
+                library.post(.init(title: "Couldn't download the \(engine.title) model",
+                                   reason: Task.isCancelled ? "Cancelled." : "Check your internet connection and try again.",
+                                   details: error.localizedDescription))
+            }
+            modelDownload = nil
+            refreshModelSizes()
+        }
+    }
+
+    private func updateModelDownload(_ fraction: Double, _ received: Int64, _ total: Int64) {
+        guard let current = modelDownload else { return }
+        modelDownload = (current.engine, current.progress.updated(fraction: fraction, received: received, total: total))
+    }
+
+    func cancelModelDownload() { modelDownloadTask?.cancel() }
 
     func refreshModelSizes() {
         realESRGANSize = RealESRGAN.sizeOnDisk
@@ -260,14 +298,57 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { library.add(panel.urls) }
     }
 
-    /// Imports files dropped on a drop area; incompatible ones are reported by the library.
+    /// Imports whatever was dropped: files, links (incl. YouTube), or GIF/image data dragged from a browser.
     func importDropped(_ providers: [NSItemProvider]) {
         for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in self.library.add([url]) }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in self.library.add([url]) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                // A link dragged from a browser — e.g. a GIF from Google Images.
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in self.library.addFromWeb(url) }
+                }
+            } else if let type = [UTType.gif, .webP, .png, .jpeg, .heic, .tiff, .image]
+                .first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) {
+                // Raw image data (some browsers drag the picture itself).
+                provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
+                    guard let data else { return }
+                    let folder = WebImport.tempDir.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let file = folder.appending(path: "Dropped image.\(type.preferredFilenameExtension ?? "png")")
+                    guard (try? data.write(to: file)) != nil else { return }
+                    Task { @MainActor in self.library.add([file]) }
+                }
             }
         }
+    }
+
+    /// Asks for a YouTube link and turns it into a wallpaper.
+    func addFromYouTube() {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Add a wallpaper from YouTube"
+        alert.informativeText = "Paste a YouTube link. The video (no sound) is downloaded at up to your display's resolution and converted automatically. Only use videos you have the right to download."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "https://www.youtube.com/watch?v=…"
+        if let clip = NSPasteboard.general.string(forType: .string), let url = URL(string: clip.trimmingCharacters(in: .whitespacesAndNewlines)), WebImport.isYouTube(url) {
+            field.stringValue = url.absoluteString
+        }
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            library.post(.init(title: "That isn't a web link", reason: "Paste a full YouTube link, like https://www.youtube.com/watch?v=…", details: text))
+            return
+        }
+        library.addFromWeb(url)
     }
 
     var launchAtLogin: Bool {

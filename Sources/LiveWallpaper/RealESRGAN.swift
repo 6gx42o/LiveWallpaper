@@ -25,16 +25,20 @@ enum RealESRGAN {
         (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value
     }
 
-    /// Downloads and verifies the weights. `progress` gets 0…1.
-    static func download(progress: @escaping @Sendable (Double) -> Void) async throws {
+    /// Downloads and verifies the weights. `progress` gets (bytes received, total bytes).
+    static func download(progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         let (bytes, response) = try await URLSession.shared.bytes(from: downloadURL)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw failure("The download server answered with an error.") }
+        let total = response.expectedContentLength > 0 ? response.expectedContentLength : downloadSize
         var data = Data()
-        data.reserveCapacity(Int(downloadSize))
+        data.reserveCapacity(Int(total))
+        progress(0, total)
         for try await byte in bytes {
+            try Task.checkCancellation()
             data.append(byte)
-            if data.count % 262_144 == 0 { progress(Double(data.count) / Double(downloadSize)) }
+            if data.count % 65_536 == 0 { progress(Int64(data.count), total) }
         }
+        progress(Int64(data.count), total)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == sha256 else { throw failure("The downloaded model didn't match the official file, so it wasn't used.") }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

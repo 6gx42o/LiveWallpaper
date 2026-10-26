@@ -84,7 +84,7 @@ enum Upscaler {
 
     /// Upscales `src` to `target` with `engine`. `allowModelDownload` permits fetching the engine's model.
     static func upscale(_ src: URL, to dst: URL, target: CGSize, engine: Engine, allowModelDownload: Bool,
-                        progress: @escaping @MainActor (String, Double?) -> Void) async throws -> Result {
+                        progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void) async throws -> Result {
         var reason: String?
         do {
             switch engine {
@@ -127,7 +127,7 @@ enum Upscaler {
     /// and encodes high-quality HEVC. `readerFormat` is the pixel format the engine wants.
     private static func transcode(_ asset: AVURLAsset, track: AVAssetTrack, to dst: URL, target: CGSize,
                                   readerFormat: Any, label: String,
-                                  progress: @escaping @MainActor (String, Double?) -> Void,
+                                  progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void,
                                   process: (CVPixelBuffer, CMTime) async throws -> CIImage) async throws {
         let transform = try await track.load(.preferredTransform)
         let duration = try await asset.load(.duration).seconds
@@ -181,7 +181,7 @@ enum Upscaler {
 
             while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
             guard adaptor.append(outBuffer, withPresentationTime: time) else { throw writer.error ?? failure("Couldn't write the upscaled video.") }
-            if duration > 0 { await progress(label, time.seconds / duration) }
+            if duration > 0 { await progress(label, time.seconds / duration, nil, nil) }
         }
         if reader.status == .failed { throw reader.error ?? failure("Couldn't read the video.") }
         input.markAsFinished()
@@ -192,7 +192,7 @@ enum Upscaler {
     // MARK: Real-ESRGAN
 
     private static func realESRGAN(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
-                                   progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+                                   progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void) async throws {
         let asset = AVURLAsset(url: src)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
         let natural = try await track.load(.naturalSize)
@@ -201,9 +201,8 @@ enum Upscaler {
         }
         if !RealESRGAN.isDownloaded {
             guard allowModelDownload else { throw failure("The Real-ESRGAN model isn't downloaded.") }
-            await progress("Downloading the Real-ESRGAN model…", 0)
-            try await RealESRGAN.download { fraction in
-                Task { @MainActor in progress("Downloading the Real-ESRGAN model…", fraction) }
+            try await RealESRGAN.download { received, total in
+                Task { @MainActor in progress("Downloading the Real-ESRGAN model…", Double(received) / Double(total), received, total) }
             }
         }
         let network = try RealESRGAN.Network(layers: try RealESRGAN.loadLayers(), width: Int(natural.width), height: Int(natural.height))
@@ -220,6 +219,23 @@ enum Upscaler {
 
     // MARK: Apple Super Resolution
 
+    /// Has macOS download Apple's model now (without upscaling). `progress` gets (fraction, ~bytes, ~total).
+    @available(macOS 26.0, *)
+    static func downloadAppleModel(progress: @escaping @MainActor (Double, Int64, Int64) -> Void) async throws {
+        guard let config = configuration(for: ModelAdvisor.typicalInput) else { throw failure("Apple Super Resolution isn't supported on this Mac.") }
+        guard config.configurationModelStatus != .ready else { return }
+        let total = ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0
+        let watcher = Task {
+            while !Task.isCancelled {
+                let fraction = Double(config.configurationModelPercentageAvailable) / 100
+                await progress(fraction, Int64(fraction * Double(total)), total)
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
+        defer { watcher.cancel() }
+        do { try await config.downloadConfigurationModel() } catch { throw failure(describe(error)) }
+    }
+
     @available(macOS 26.0, *)
     private static func configuration(for video: CGSize) -> VTSuperResolutionScalerConfiguration? {
         guard VTSuperResolutionScalerConfiguration.isSupported else { return nil }
@@ -231,7 +247,7 @@ enum Upscaler {
 
     @available(macOS 26.0, *)
     private static func superResolve(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
-                                     progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+                                     progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void) async throws {
         let asset = AVURLAsset(url: src)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
         let natural = try await track.load(.naturalSize)
@@ -241,10 +257,13 @@ enum Upscaler {
 
         if config.configurationModelStatus != .ready {
             guard allowModelDownload else { throw failure("Apple's upscaling model isn't downloaded.") }
-            await progress("Downloading Apple's upscaling model…", nil)
+            await progress("Downloading Apple's upscaling model…", nil, nil, nil)
             let watcher = Task {
                 while !Task.isCancelled {
-                    await progress("Downloading Apple's upscaling model…", Double(config.configurationModelPercentageAvailable) / 100)
+                    // macOS reports only a percentage; the size is Apple's (~70 MB).
+                    let fraction = Double(config.configurationModelPercentageAvailable) / 100
+                    let total = ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0
+                    await progress("Downloading Apple's upscaling model…", fraction, Int64(fraction * Double(total)), total)
                     try? await Task.sleep(for: .milliseconds(500))
                 }
             }
@@ -285,7 +304,7 @@ enum Upscaler {
     // MARK: Lanczos
 
     private static func lanczos(_ src: URL, to dst: URL, target: CGSize,
-                                progress: @escaping @MainActor (String, Double?) -> Void) async throws {
+                                progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void) async throws {
         let asset = AVURLAsset(url: src)
         let composition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
             let image = request.sourceImage
@@ -305,7 +324,7 @@ enum Upscaler {
         session.videoComposition = composition
         let watcher = Task {
             for await state in session.states(updateInterval: 0.5) {
-                if case .exporting(let p) = state { await progress("Upscaling with Lanczos…", p.fractionCompleted) }
+                if case .exporting(let p) = state { await progress("Upscaling with Lanczos…", p.fractionCompleted, nil, nil) }
             }
         }
         defer { watcher.cancel() }

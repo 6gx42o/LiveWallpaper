@@ -23,9 +23,13 @@ final class Library {
     private enum Job {
         case importFile(URL)
         case upscale(URL, allowModelDownload: Bool)
+        /// A link dragged in from a browser (image, GIF or video file).
+        case download(URL)
+        /// A YouTube link, fetched with yt-dlp.
+        case youtube(URL)
     }
 
-    static let supportedFormats = "MP4, MOV and M4V work out of the box. With ffmpeg installed: WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP."
+    static let supportedFormats = "MP4, MOV, M4V, GIF, animated WebP/PNG and still images work out of the box. With ffmpeg installed: WebM, MKV, AVI, FLV, WMV, MPEG, OGV and 3GP."
     /// Formats macOS can't decode itself but ffmpeg can.
     nonisolated static let ffmpegExtensions: Set<String> = ["webm", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "ogv", "3gp", "vob"]
     /// Looked up each time, so installing ffmpeg works without restarting the app.
@@ -40,7 +44,7 @@ final class Library {
     /// Library videos that can't be played, with a user-facing reason.
     private(set) var broken: [URL: String] = [:]
     /// The running job's label and progress.
-    private(set) var converting: (name: String, fraction: Double?)?
+    private(set) var converting: TransferProgress?
     private(set) var notices: [Notice] = []
     var onChange: (() -> Void)?
     var onConverted: ((URL) -> Void)?
@@ -48,6 +52,9 @@ final class Library {
     var onUpscaled: ((URL, URL, Upscaler.Method) -> Void)?
     private var inspecting: Set<URL> = []
     private var queue: [Job] = []
+    /// The running job, so it can be cancelled.
+    private var currentTask: Task<Void, Never>?
+    private var currentProcess: Process?
     private var allEdits: [String: Edits] = {
         guard let data = UserDefaults.standard.data(forKey: "edits") else { return [:] }
         return (try? JSONDecoder().decode([String: Edits].self, from: data)) ?? [:]
@@ -137,6 +144,18 @@ final class Library {
         next()
     }
 
+    /// Downloads a link (from a browser drag or pasted) and imports it; YouTube links go through yt-dlp.
+    func addFromWeb(_ url: URL) {
+        queue.append(WebImport.isYouTube(url) ? .youtube(url) : .download(url))
+        next()
+    }
+
+    /// Stops the running conversion, download or upscale.
+    func cancelCurrentJob() {
+        currentProcess?.terminate()
+        currentTask?.cancel()
+    }
+
     /// Queues an upscaled copy of a library video that covers the display.
     func upscale(_ url: URL, allowModelDownload: Bool) {
         queue.append(.upscale(url, allowModelDownload: allowModelDownload))
@@ -187,7 +206,7 @@ final class Library {
             }
             return nil
         }
-        if !isMovie {
+        if !isMovie && !AnimatedImage.isImage(src) {
             let what = ext.isEmpty
                 ? "This file has no extension and isn't a video."
                 : "This is a .\(ext) file" + (UTType(filenameExtension: ext)?.localizedDescription.map { " (\($0))" } ?? "") + ", not a video."
@@ -201,10 +220,57 @@ final class Library {
         switch queue.removeFirst() {
         case .importFile(let src): runImport(src)
         case .upscale(let url, let allowModelDownload): runUpscale(url, allowModelDownload: allowModelDownload)
+        case .download(let url): runDownload(url)
+        case .youtube(let url): runYouTube(url)
+        }
+    }
+
+    private func runDownload(_ url: URL) {
+        busy = true
+        let title = "Downloading from \(url.host() ?? "the web")"
+        setProgress(title, nil)
+        currentTask = Task {
+            do {
+                let file = try await WebImport.download(url) { received, total in
+                    Task { @MainActor in self.setProgress(title, total.map { Double(received) / Double($0) }, received, total) }
+                }
+                queue.insert(.importFile(file), at: 0)
+            } catch {
+                notices.append(Notice(title: "Couldn't download “\(url.lastPathComponent.isEmpty ? url.absoluteString : url.lastPathComponent)”",
+                                      reason: Task.isCancelled ? "Cancelled." : "The link couldn't be downloaded, so nothing was added.",
+                                      details: "\(url.absoluteString)\n\(error.localizedDescription)"))
+            }
+            finishJob()
+        }
+    }
+
+    private func runYouTube(_ url: URL) {
+        busy = true
+        setProgress("Downloading from YouTube", nil)
+        let process = Process()
+        currentProcess = process
+        let maxHeight = Int(max(Display.pixelSize.width, Display.pixelSize.height) >= 3000 ? 2160 : 1440)
+        currentTask = Task {
+            do {
+                let file = try await WebImport.downloadYouTube(url, maxHeight: maxHeight, process: process) { title, received, total in
+                    Task { @MainActor in
+                        self.setProgress("Downloading “\(title ?? "YouTube video")”", total.map { Double(received) / Double($0) }, received, total)
+                    }
+                }
+                queue.insert(.importFile(file), at: 0)
+            } catch {
+                notices.append(Notice(title: "Couldn't get the YouTube video",
+                                      reason: WebImport.ytDlpPath == nil ? "YouTube links need yt-dlp. Install it with: brew install yt-dlp"
+                                                                         : "yt-dlp couldn't download it (private, removed, age-restricted, or not a video link).",
+                                      details: "\(url.absoluteString)\n\(error.localizedDescription)"))
+            }
+            finishJob()
         }
     }
 
     private func finishJob() {
+        currentTask = nil
+        currentProcess = nil
         converting = nil
         busy = false
         onChange?()
@@ -224,9 +290,15 @@ final class Library {
         let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
         setProgress("Converting “\(name)”", nil)
 
-        Task {
+        currentTask = Task {
+            // Downloads land in a temp folder; tidy them up once imported.
+            defer { if src.path.hasPrefix(WebImport.tempDir.path) { try? FileManager.default.removeItem(at: src.deletingLastPathComponent()) } }
             do {
-                try await convert(src, to: tmp, name: name)
+                if AnimatedImage.isImage(src) {
+                    try await AnimatedImage.convert(src, to: tmp) { self.setProgress("Converting “\(name)”", $0) }
+                } else {
+                    try await convert(src, to: tmp, name: name)
+                }
                 try FileManager.default.moveItem(at: tmp, to: out)
                 log.notice("converted \(src.lastPathComponent, privacy: .public) -> \(out.lastPathComponent, privacy: .public)")
                 await warnAboutQuality(source: src, converted: out)
@@ -271,7 +343,7 @@ final class Library {
         busy = true
         let name = url.deletingPathExtension().lastPathComponent
         setProgress("Upscaling “\(name)”", nil)
-        Task {
+        currentTask = Task {
             do {
                 let info = try await VideoInfo.load(url)
                 let target = Upscaler.targetSize(for: info.size, display: Display.pixelSize)
@@ -282,8 +354,8 @@ final class Library {
                 let out = freeURL(for: "\(name) (Upscaled)")
                 let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
                 defer { try? FileManager.default.removeItem(at: tmp) }
-                let result = try await Upscaler.upscale(url, to: tmp, target: target, engine: .current, allowModelDownload: allowModelDownload) { label, fraction in
-                    self.setProgress(label, fraction)
+                let result = try await Upscaler.upscale(url, to: tmp, target: target, engine: .current, allowModelDownload: allowModelDownload) { label, fraction, received, total in
+                    self.setProgress(label, fraction, received, total)
                 }
                 try FileManager.default.moveItem(at: tmp, to: out)
                 allEdits[out.lastPathComponent] = allEdits[url.lastPathComponent]
@@ -308,8 +380,12 @@ final class Library {
         }
     }
 
-    private func setProgress(_ name: String, _ fraction: Double?) {
-        converting = (name, fraction)
+    private func setProgress(_ title: String, _ fraction: Double?, _ received: Int64? = nil, _ total: Int64? = nil) {
+        if let current = converting, current.title == title {
+            converting = current.updated(fraction: fraction, received: received, total: total)
+        } else {
+            converting = TransferProgress(title: title, fraction: fraction, receivedBytes: received, totalBytes: total)
+        }
         onChange?()
     }
 

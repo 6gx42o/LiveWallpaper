@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Status, wallpaper library and settings — as the compact menu bar panel, or as the
 /// resizable (full-screen capable) app window.
@@ -31,13 +32,24 @@ struct PanelView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                Picker("Section", selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
+                    ForEach(AppModel.Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(maxWidth: 360)
                 Divider()
-                ScrollView { library.padding(.trailing, 4) }
+                switch model.tab {
+                case .wallpapers:
+                    ScrollView { library.padding(.trailing, 4) }
+                        .contentShape(Rectangle())
+                        .onDrop(of: VideoDropDelegate.types, delegate: VideoDropDelegate(model: model))
+                case .upscale:
+                    ScrollView { UpscaleView(studio: model.studio, model: model).padding(.trailing, 4) }
+                case .memory:
+                    MemoryView(cleaner: model.memory, needed: memoryNeed)
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], delegate: VideoDropDelegate(model: model))
 
             Divider()
 
@@ -47,7 +59,7 @@ struct PanelView: View {
                 quitButton
             }
             .padding(24)
-            .frame(width: 300)
+            .frame(width: 330)
             .frame(maxHeight: .infinity, alignment: .top)
             .background(Color.secondary.opacity(0.06))
             .sheet(isPresented: Binding(get: { model.scanner != nil }, set: { if !$0 { model.finishScan(adding: []) } })) {
@@ -68,6 +80,14 @@ struct PanelView: View {
                 )
             }
         }
+    }
+
+    /// What the chosen upscaler needs, shown on the Memory tab.
+    private var memoryNeed: (name: String, bytes: Int64)? {
+        let engine = model.studio.info != nil ? model.studio.engine : model.upscaler
+        guard engine != .basic else { return nil }
+        let input = model.studio.info?.size ?? ModelAdvisor.typicalInput
+        return (engine.title, ModelAdvisor.estimatedMemory(engine, input: input))
     }
 
     private var quitButton: some View {
@@ -145,6 +165,13 @@ struct PanelView: View {
                 Text("Wallpapers").font(isWindow ? .title3.weight(.semibold) : .subheadline.weight(.semibold))
                 Spacer()
                 Button {
+                    model.addFromYouTube()
+                } label: {
+                    Label("YouTube", systemImage: "play.rectangle")
+                }
+                .buttonStyle(.borderless)
+                .help("Paste a YouTube link to turn it into a wallpaper")
+                Button {
                     model.startScan()
                 } label: {
                     Label("Find Videos", systemImage: "magnifyingglass")
@@ -170,7 +197,7 @@ struct PanelView: View {
                 )
             }
             if let converting = lib.converting {
-                ConvertingCard(title: converting.name, fraction: converting.fraction)
+                ProgressCard(progress: converting) { model.library.cancelCurrentJob() }
             }
             ForEach(lib.notices) { notice in
                 NoticeCard(
@@ -235,31 +262,28 @@ struct PanelView: View {
                 isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })
             )
 
-            Text("Upscaling").font(isWindow ? .headline : .subheadline.weight(.semibold)).padding(.top, 6)
-            Picker("Upscaler", selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
-                ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .help("Which upscaler the Upscale button uses")
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Real-ESRGAN model")
-                    Text(model.realESRGANSize.map { "Downloaded · \(UpscalerModel.sizeText($0))" }
-                         ?? "Not downloaded — downloads (\(UpscalerModel.sizeText(RealESRGAN.downloadSize))) only when you upscale.")
-                        .font(.caption).foregroundStyle(.secondary)
+            Text("Quality & upscaling").font(isWindow ? .headline : .subheadline.weight(.semibold)).padding(.top, 6)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Resolution")
+                Picker("Resolution", selection: Binding(get: { model.resolution }, set: { model.resolution = $0 })) {
+                    ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
                 }
-                Spacer(minLength: 8)
-                Button("Delete…") { model.deleteRealESRGANModel() }
-                    .controlSize(.small)
-                    .disabled(model.realESRGANSize == nil)
-                    .help("Delete the model to free space (asks to confirm)")
+                .labelsHidden()
+                Text("Wallpapers are checked and upscaled for this. Native is your display's own resolution.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Apple's model")
-                Text(model.appleModelSize.map { "\(UpscalerModel.sizeText($0)) · managed by macOS — apps can't delete it; macOS removes it when it needs space." }
-                     ?? "Not downloaded — only fetched if you upscale with Apple Super Resolution.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Upscaler")
+                Picker("Upscaler", selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
+                    ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .help("Which upscaler the Upscale button uses")
             }
+            // The chosen upscaler: download it, see its RAM use and whether it runs on this Mac.
+            ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video", compact: true, engines: [model.upscaler])
+            Button("Compare all models…") { model.tab = .upscale; model.openWindow?() }
+                .buttonStyle(.link).font(.caption)
             SettingRow(
                 title: "Ask after upscaling",
                 detail: "Offer to keep or delete the Real-ESRGAN model each time it's used.",
@@ -410,26 +434,6 @@ private struct WallpaperTile: View {
     }
 }
 
-private struct ConvertingCard: View {
-    let title: String
-    let fraction: Double?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "wand.and.stars")
-                Text(title).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                if let fraction { Text("\(Int(fraction * 100))%").monospacedDigit().foregroundStyle(.secondary) }
-            }
-            .font(.caption)
-            if let fraction { ProgressView(value: fraction) } else { ProgressView().progressViewStyle(.linear) }
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 /// An error (red), quality warning (orange) or info (accent) message with details to copy.
 private struct NoticeCard: View {
     let notice: Library.Notice
@@ -554,14 +558,17 @@ private struct DropZone: View {
 private struct VideoDropDelegate: DropDelegate {
     let model: AppModel
 
-    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.fileURL]) }
+    /// Files, links (YouTube, images on the web) and image data dragged from a browser.
+    static let types: [UTType] = [.fileURL, .url, .gif, .webP, .png, .jpeg, .heic, .tiff, .image]
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: Self.types) }
     func dropEntered(info: DropInfo) { model.isDropTargeted = true }
     func dropExited(info: DropInfo) { model.isDropTargeted = false }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
 
     func performDrop(info: DropInfo) -> Bool {
         model.isDropTargeted = false
-        model.importDropped(info.itemProviders(for: [.fileURL]))
+        model.importDropped(info.itemProviders(for: Self.types))
         return true
     }
 }

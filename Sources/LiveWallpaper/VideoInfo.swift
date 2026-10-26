@@ -35,12 +35,9 @@ struct QualityIssue: Hashable {
 }
 
 enum Display {
-    /// Pixel size of the largest connected display.
-    static var pixelSize: CGSize {
-        NSScreen.screens
-            .map { CGSize(width: $0.frame.width * $0.backingScaleFactor, height: $0.frame.height * $0.backingScaleFactor) }
-            .max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 1920, height: 1080)
-    }
+    /// The resolution wallpapers are judged and upscaled against: the display's native resolution
+    /// unless another is chosen in Settings.
+    static var pixelSize: CGSize { ResolutionChoice.current.size }
 }
 
 extension VideoInfo {

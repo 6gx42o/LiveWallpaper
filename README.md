@@ -9,10 +9,15 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Any video, converted automatically — at full quality.** Add a `.mov`, `.mp4`, `.m4v` (or, with ffmpeg installed, `.webm`, `.mkv`, `.avi`…) and it's re-encoded to a muted, hardware-decodable HEVC file at the highest quality, keeping its original resolution (only sources bigger than 4K / your display are scaled down).
 - **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
 - **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
-- **Upscaling, with models only when you ask.** Low-resolution videos can be upscaled to cover your display. Nothing is bundled with the app: the model downloads only when you press Upscale (after asking), and you choose the engine in Settings:
-  - **Real-ESRGAN** (default) — the official 4.9 MB `realesr-general-x4v3` weights, hash-verified, stored in LiveWallpaper's own folder and run on the GPU. After each upscale you're asked whether to keep or delete it, and Settings has a **Delete…** button (with confirmation).
-  - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it (macOS removes it when it needs space).
+- **Upscaling, with models only when you ask.** Nothing is bundled with the app. Each model downloads only when you press **Download** (Settings or the Upscale tab) or **Upscale** (after asking), with a progress bar showing size downloaded, time left and time elapsed. Engines:
+  - **Real-ESRGAN** — the official 4.9 MB `realesr-general-x4v3` weights, hash-verified, stored in LiveWallpaper's own folder, run on the GPU. After each upscale you're asked whether to keep or delete it; Settings has **Delete…** (with confirmation).
+  - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it.
   - **Basic** — Lanczos scaling, no download.
+- **Advice for your Mac.** Each model shows how much RAM it needs for the video, whether it runs on your chip, why not if it can't (too much RAM, unsupported chip/macOS/resolution), and which one is **Recommended** for your chip and memory.
+- **Memory tab.** See RAM in use, the apps using the most, quit the ones you pick (or all others) after a confirmation — apps still ask to save — and **Clean Memory** (clears macOS's file cache with `purge`; macOS asks for your password).
+- **Resolution.** Choose what wallpapers are checked and upscaled for; the default is your display's true native resolution, detected on any Mac or monitor.
+- **Upscale tab.** Upscale any video, GIF or image without making it a wallpaper; results go to Movies › LiveWallpaper Upscaled, with *Use as Wallpaper* one click away.
+- **More ways to add wallpapers.** Paste a **YouTube** link (uses [yt-dlp](https://github.com/yt-dlp/yt-dlp): `brew install yt-dlp`; video only, up to your display's resolution — only use videos you have the right to download), or drag **GIFs, animated WebP/PNG, images or links** straight from a browser — they're downloaded and converted automatically.
 - **Find Videos.** Scans Movies, Downloads, Desktop, Documents and Pictures for videos that could be wallpapers, grades each against your display (Great fit / Good fit / Low resolution), and lets you tick the ones to add — nothing is added automatically.
 - **Editor.** Trim, playback speed, Fill/Fit framing with crop position, and the lock screen frame — all non-destructive, with a live preview shaped like your display.
 - **Sits behind your desktop icons** on every display and every Space.
@@ -99,6 +104,14 @@ Sources/LiveWallpaper/
   RealESRGAN.swift       on-request model download/verify/delete and the network on Metal (MPSGraph)
   UpscalerModel.swift    reports Apple's macOS-managed model
   VideoScanner.swift     "Find Videos" scan + results sheet
+  ModelAdvisor.swift     per-Mac RAM estimates, can-it-run reasons, recommendation
+  ModelList.swift        model cards (download/delete, RAM, availability) + download consent
+  SystemInfo.swift       chip, RAM, free memory, native display resolution, resolution setting
+  MemoryCleaner.swift    Memory tab: usage, quit apps, purge
+  UpscaleStudio.swift    the standalone Upscale tab
+  AnimatedImage.swift    GIF / animated WebP / image → video (ImageIO)
+  WebImport.swift        link downloads and YouTube (yt-dlp) with progress
+  TransferProgress.swift size / time-left progress model and card
   LockScreen.swift       lock screen still + restoring your own picture
   PlaybackGate.swift     all play/pause decisions
   Library.swift          import → convert (AVFoundation, ffmpeg fallback) → analysis, edits, upscale jobs
