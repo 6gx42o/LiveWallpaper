@@ -60,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.collectionBehavior = [.fullScreenPrimary, .moveToActiveSpace] // open on the Space you're using
             window.isReleasedWhenClosed = false
             window.delegate = self
+            // Drops are read at the window level with AppKit so browser-promised files (dragged images/GIFs) work.
+            window.registerForDraggedTypes(AppModel.dropTypes)
             window.center()
             window.setFrameAutosaveName("MainWindow")
             mainWindow = window
@@ -101,6 +103,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func addVideos() { model.addVideos() }
+}
+
+/// The main window forwards drag & drop to its delegate (anywhere in the window).
+extension AppDelegate: NSDraggingDestination {
+    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard model.tab != .memory else { return [] }
+        model.isDropTargeted = true
+        return .copy
+    }
+
+    func draggingExited(_ sender: NSDraggingInfo?) { model.isDropTargeted = false }
+
+    func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        model.isDropTargeted = false
+        model.handleDrop(sender.draggingPasteboard)
+        return true
+    }
 }
 
 MainActor.assumeIsolated {

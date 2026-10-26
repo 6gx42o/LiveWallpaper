@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftUI
+import os
 
 /// Frees memory before upscaling: shows what's using RAM, quits apps you pick (each can still ask
 /// to save), and can clear macOS's file cache. Nothing is closed without asking.
@@ -17,6 +18,8 @@ final class MemoryCleaner: ObservableObject {
     @Published private(set) var apps: [AppUsage] = []
     @Published var selected: Set<pid_t> = []
     @Published private(set) var lastResult: String?
+    /// Called after the cache is cleared (the wallpaper reloads its video, which purge can leave blank).
+    var onCacheCleared: (() -> Void)?
     private var timer: Timer?
 
     var total: Int64 { SystemInfo.totalMemory }
@@ -67,7 +70,8 @@ final class MemoryCleaner: ObservableObject {
         Task {
             try? await Task.sleep(for: .seconds(2))
             refresh()
-            lastResult = "Freed \(SystemInfo.bytes(max(available - before, 0))) — \(SystemInfo.bytes(available)) now available."
+            let freed = available - before
+            lastResult = "Quit \(targets.map(\.name).formatted(.list(type: .and)))" + (freed > 50_000_000 ? ", freeing \(SystemInfo.bytes(freed))" : "") + " — \(SystemInfo.bytes(available)) now available."
         }
     }
 
@@ -85,6 +89,8 @@ final class MemoryCleaner: ObservableObject {
             return
         }
         refresh()
+        onCacheCleared?()
+        Logger(subsystem: "LiveWallpaper", category: "memory").notice("purge done: \(before) -> \(self.available) bytes available")
         lastResult = "Cleared the cache — freed \(SystemInfo.bytes(max(available - before, 0))); \(SystemInfo.bytes(available)) now available."
     }
 

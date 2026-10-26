@@ -40,8 +40,6 @@ struct PanelView: View {
                 switch model.tab {
                 case .wallpapers:
                     ScrollView { library.padding(.trailing, 4) }
-                        .contentShape(Rectangle())
-                        .onDrop(of: VideoDropDelegate.types, delegate: VideoDropDelegate(model: model))
                 case .upscale:
                     ScrollView { UpscaleView(studio: model.studio, model: model).padding(.trailing, 4) }
                 case .memory:
@@ -551,24 +549,5 @@ private struct DropZone: View {
     private var icon: some View {
         Image(systemName: isTargeted ? "arrow.down.circle.fill" : "square.and.arrow.down.on.square")
             .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-    }
-}
-
-/// Accepts files dragged onto the window and hands them to the library.
-private struct VideoDropDelegate: DropDelegate {
-    let model: AppModel
-
-    /// Files, links (YouTube, images on the web) and image data dragged from a browser.
-    static let types: [UTType] = [.fileURL, .url, .gif, .webP, .png, .jpeg, .heic, .tiff, .image]
-
-    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: Self.types) }
-    func dropEntered(info: DropInfo) { model.isDropTargeted = true }
-    func dropExited(info: DropInfo) { model.isDropTargeted = false }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
-
-    func performDrop(info: DropInfo) -> Bool {
-        model.isDropTargeted = false
-        model.importDropped(info.itemProviders(for: Self.types))
-        return true
     }
 }

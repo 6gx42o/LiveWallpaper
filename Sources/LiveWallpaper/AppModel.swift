@@ -68,6 +68,11 @@ final class AppModel: ObservableObject {
 
     init() {
         gate.onChange = { [unowned self] in objectWillChange.send() }
+        memory.onCacheCleared = { [unowned self] in
+            // Reload the wallpaper so it isn't left blank after macOS drops its cached frames.
+            windows.forEach { $0.load(nil) }
+            loadCurrent()
+        }
         studio.onFinished = { [unowned self] method in
             refreshModelSizes()
             if method == .realESRGAN, asksToDeleteModel, realESRGANSize != nil { askToKeepModel() }
@@ -298,33 +303,57 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { library.add(panel.urls) }
     }
 
-    /// Imports whatever was dropped: files, links (incl. YouTube), or GIF/image data dragged from a browser.
-    func importDropped(_ providers: [NSItemProvider]) {
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in self.library.add([url]) }
-                }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                // A link dragged from a browser — e.g. a GIF from Google Images.
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in self.library.addFromWeb(url) }
-                }
-            } else if let type = [UTType.gif, .webP, .png, .jpeg, .heic, .tiff, .image]
-                .first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) {
-                // Raw image data (some browsers drag the picture itself).
-                provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
-                    guard let data else { return }
-                    let folder = WebImport.tempDir.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    let file = folder.appending(path: "Dropped image.\(type.preferredFilenameExtension ?? "png")")
-                    guard (try? data.write(to: file)) != nil else { return }
-                    Task { @MainActor in self.library.add([file]) }
+    /// Turns whatever was dropped into local files: Finder files, files a browser promises to write
+    /// (how Safari/Chrome hand over a dragged image or GIF), web links, or raw image data.
+    /// `files` gets local files; `links` gets web links (only used for wallpapers).
+    func readDrop(_ pasteboard: NSPasteboard, files: @escaping @MainActor ([URL]) -> Void, links: (([URL]) -> Void)?) {
+        let types = pasteboard.types?.map(\.rawValue) ?? []
+        log.notice("drop types: \(types.joined(separator: ", "), privacy: .public)")
+        let folder = WebImport.tempDir.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        if let local = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !local.isEmpty {
+            return files(local)
+        }
+        if let promises = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
+            for promise in promises {
+                promise.receivePromisedFiles(atDestination: folder, options: [:], operationQueue: .main) { url, error in
+                    MainActor.assumeIsolated {
+                        if let error {
+                            self.library.post(.init(title: "Couldn't get the dropped file", reason: "The app it came from didn't finish writing it.", details: error.localizedDescription))
+                        } else { files([url]) }
+                    }
                 }
             }
+            return
         }
+        if let links, let web = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+           case let webLinks = web.filter({ ["http", "https"].contains($0.scheme?.lowercased()) }), !webLinks.isEmpty {
+            return links(webLinks)
+        }
+        for (type, ext) in [("com.compuserve.gif", "gif"), ("org.webmproject.webp", "webp"), ("public.png", "png"), ("public.jpeg", "jpg"), ("public.tiff", "tiff")] {
+            if let data = pasteboard.data(forType: NSPasteboard.PasteboardType(type)) {
+                let file = folder.appending(path: "Dropped image.\(ext)")
+                if (try? data.write(to: file)) != nil { return files([file]) }
+            }
+        }
+        library.post(.init(title: "Couldn't use what was dropped", reason: "It wasn't a file, a web link or an image. Try saving it first, then drop the file.",
+                           details: types.joined(separator: ", ")))
+    }
+
+    /// The window's drop target: Wallpapers imports, Upscale loads the file.
+    func handleDrop(_ pasteboard: NSPasteboard) {
+        switch tab {
+        case .upscale: readDrop(pasteboard, files: { if let first = $0.first { self.studio.load(first) } }, links: nil)
+        default: readDrop(pasteboard, files: { self.library.add($0) }, links: { $0.forEach(self.library.addFromWeb) })
+        }
+    }
+
+    /// Types the window accepts for dropping.
+    static var dropTypes: [NSPasteboard.PasteboardType] {
+        let images = ["com.compuserve.gif", "public.jpeg", "org.webmproject.webp"].map { NSPasteboard.PasteboardType($0) }
+        let promises = NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+        return [.fileURL, .URL, .png, .tiff] + images + promises
     }
 
     /// Asks for a YouTube link and turns it into a wallpaper.

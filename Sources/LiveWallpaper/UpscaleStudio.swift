@@ -189,12 +189,5 @@ struct UpscaleView: View {
                 }
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let url { Task { @MainActor in studio.load(url) } }
-            }
-            return true
-        }
     }
 }
