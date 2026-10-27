@@ -175,7 +175,7 @@ enum ModelAdvisor {
         }
         func describe(_ engine: Upscaler.Engine) -> String {
             guard let seconds = secondsPerFrame(engine, input: input) else { return "" }
-            return seconds < 1 ? " (about \(Int((1 / seconds).rounded())) frames a second here)" : " (about \(String(format: "%.1f", seconds)) s per frame here)"
+            return seconds <= 0.5 ? " (about \(Int((1 / seconds).rounded())) frames a second here)" : " (about \(String(format: "%.1f", seconds)) s per frame here)"
         }
         let mac = macDescription
         let fallback = runnable.contains(.appleSuperResolution) ? Upscaler.Engine.appleSuperResolution : .basic
