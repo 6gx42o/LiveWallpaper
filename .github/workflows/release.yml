@@ -19,9 +19,13 @@ jobs:
   release:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build
-        run: VERSION="1.${{ github.run_number }}" ./build.sh
+        run: UNIVERSAL=1 VERSION="1.${{ github.run_number }}" ./build.sh
+      - name: Check it runs on Apple silicon and Intel
+        run: |
+          lipo LiveWallpaper.app/Contents/MacOS/LiveWallpaper -verify_arch arm64
+          lipo LiveWallpaper.app/Contents/MacOS/LiveWallpaper -verify_arch x86_64
       - name: Package
         run: ditto -c -k --keepParent LiveWallpaper.app LiveWallpaper.zip
       - name: Publish release

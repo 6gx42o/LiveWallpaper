@@ -167,6 +167,11 @@ final class Updater: ObservableObject {
         guard (info["CFBundleShortVersionString"] as? String) == release.version else {
             throw Self.failure("The download's version doesn't match the release.")
         }
+        // Never swap in a build this Mac can't run (e.g. Apple silicon only on an Intel Mac).
+        let native = SystemInfo.isAppleSilicon ? NSBundleExecutableArchitectureARM64 : NSBundleExecutableArchitectureX86_64
+        guard Bundle(url: newApp)?.executableArchitectures?.contains(NSNumber(value: native)) == true else {
+            throw Self.failure("This version doesn't run on this Mac's processor.")
+        }
         try await Self.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp.path])
 
         // Swap in place: the same path and bundle ID keep settings, the login item and Dock/Finder references.

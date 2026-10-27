@@ -122,8 +122,8 @@ enum RealESRGAN {
         /// Tile size fed to the network (whole frame when it fits) and the overlap kept on each side.
         private let tileWidth: Int, tileHeight: Int, overlap: Int
         private let dataType: MPSDataType
-        private var rgb: [Float16]
-        private var tileOut: [Float16]
+        private var rgb: [Float]
+        private var tileOut: [Float]
 
         /// `tile` is the largest tile side in source pixels; `fullPrecision` trades speed for float32 maths.
         init(model: Model, width: Int, height: Int, tile: Int, fullPrecision: Bool) throws {
@@ -139,21 +139,21 @@ enum RealESRGAN {
             tileHeight = min(height, tile + 32) & ~1
             overlap = min(16, min(tileWidth, tileHeight) / 4)
             dataType = fullPrecision ? .float32 : .float16
-            // Inputs and outputs travel as half floats; the graph casts when computing in full precision.
-            guard let buffer = device.makeBuffer(length: tileWidth * tileHeight * 3 * 2, options: .storageModeShared)
+            // Frames travel as 32-bit floats (Swift has no Float16 on Intel); the graph casts to half precision itself.
+            guard let buffer = device.makeBuffer(length: tileWidth * tileHeight * 3 * 4, options: .storageModeShared)
             else { throw RealESRGAN.failure("Out of GPU memory.") }
             inputBuffer = buffer
-            rgb = [Float16](repeating: 0, count: width * height * 3)
-            tileOut = [Float16](repeating: 0, count: tileWidth * tileHeight * scale * scale * 3)
+            rgb = [Float](repeating: 0, count: width * height * 3)
+            tileOut = [Float](repeating: 0, count: tileWidth * tileHeight * scale * scale * 3)
 
             let graph = MPSGraph()
             self.graph = graph
-            input = graph.placeholder(shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float16, name: "input")
+            input = graph.placeholder(shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float32, name: "input")
             let builder = Builder(graph: graph, weights: weights, dataType: dataType)
-            let x = fullPrecision ? graph.cast(input, to: .float32, name: "in32") : input
+            let x = fullPrecision ? input : graph.cast(input, to: .float16, name: "in16")
             var y = try model.architecture == .compact ? builder.compact(x) : builder.rrdb(x, scale: model.scale)
             y = graph.clamp(y, min: builder.scalar(0), max: builder.scalar(1), name: nil)
-            output = fullPrecision ? graph.cast(y, to: .float16, name: "out16") : y
+            output = fullPrecision ? y : graph.cast(y, to: .float32, name: "out32")
         }
 
         /// Upscales one BGRA frame by `scale` into `destination` (BGRA, `scale`× the size).
@@ -194,7 +194,7 @@ enum RealESRGAN {
             return Array(stride(from: 0, to: length - tile, by: step)) + [length - tile]
         }
 
-        private static func byte(_ value: Float16) -> UInt8 { UInt8(Float(value) * 255 + 0.5) }
+        private static func byte(_ value: Float) -> UInt8 { UInt8(value * 255 + 0.5) }
 
         private func readFrame(_ frame: CVPixelBuffer) throws {
             CVPixelBufferLockBaseAddress(frame, .readOnly)
@@ -207,21 +207,21 @@ enum RealESRGAN {
                 let row = src + y * stride
                 for x in 0..<width {
                     let o = (y * width + x) * 3
-                    rgb[o] = Float16(Float(row[x * 4 + 2]) / 255)
-                    rgb[o + 1] = Float16(Float(row[x * 4 + 1]) / 255)
-                    rgb[o + 2] = Float16(Float(row[x * 4]) / 255)
+                    rgb[o] = Float(row[x * 4 + 2]) / 255
+                    rgb[o + 1] = Float(row[x * 4 + 1]) / 255
+                    rgb[o + 2] = Float(row[x * 4]) / 255
                 }
             }
         }
 
         private func run(x0: Int, y0: Int) throws {
-            let tile = inputBuffer.contents().assumingMemoryBound(to: Float16.self)
+            let tile = inputBuffer.contents().assumingMemoryBound(to: Float.self)
             rgb.withUnsafeBufferPointer { frame in
                 for y in 0..<tileHeight {
                     (tile + y * tileWidth * 3).update(from: frame.baseAddress! + ((y0 + y) * width + x0) * 3, count: tileWidth * 3)
                 }
             }
-            let feed = MPSGraphTensorData(inputBuffer, shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float16)
+            let feed = MPSGraphTensorData(inputBuffer, shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float32)
             let result = graph.run(with: queue, feeds: [input: feed], targetTensors: [output], targetOperations: nil)
             guard let out = result[output] else { throw RealESRGAN.failure("The upscaler produced no output.") }
             tileOut.withUnsafeMutableBytes { out.mpsndarray().readBytes($0.baseAddress!, strideBytes: nil) }
@@ -248,10 +248,9 @@ enum RealESRGAN {
 
         private func constant(_ name: String, shape: [Int]? = nil) throws -> MPSGraphTensor {
             guard let tensor = weights[name] else { throw RealESRGAN.incomplete }
-            let data = dataType == .float16
-                ? tensor.values.map(Float16.init).withUnsafeBufferPointer { Data(buffer: $0) }
-                : tensor.values.withUnsafeBufferPointer { Data(buffer: $0) }
-            return graph.constant(data, shape: (shape ?? tensor.shape) as [NSNumber], dataType: dataType)
+            let data = tensor.values.withUnsafeBufferPointer { Data(buffer: $0) }
+            let value = graph.constant(data, shape: (shape ?? tensor.shape) as [NSNumber], dataType: .float32)
+            return dataType == .float32 ? value : graph.cast(value, to: dataType, name: name + ".half")
         }
 
         /// 3×3 convolution (PyTorch `name.weight` / `name.bias`).
