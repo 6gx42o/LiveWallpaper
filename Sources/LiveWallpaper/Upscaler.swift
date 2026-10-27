@@ -11,7 +11,7 @@ enum Upscaler {
     /// Smallest to largest; `realESRGAN` (Medium) keeps its old name so saved settings carry over.
     enum Engine: String, CaseIterable {
         case basic, appleSuperResolution, realESRGANSmall, realESRGAN, realESRGANAnime, realESRGANLarge2x, realESRGANLarge,
-             realESRNetLarge, swinIRMedium2x, swinIRMedium, swinIRLarge
+             realESRNetLarge, swinIRMedium2x, swinIRMedium, swinIRLarge, swinIRLargeSmooth
 
         var title: String {
             switch self {
@@ -26,6 +26,7 @@ enum Upscaler {
             case .swinIRMedium2x: "SwinIR Medium 2×"
             case .swinIRMedium: "SwinIR Medium 4×"
             case .swinIRLarge: "SwinIR Large 4×"
+            case .swinIRLargeSmooth: "SwinIR Large 4× Smooth"
             }
         }
 
@@ -43,6 +44,7 @@ enum Upscaler {
             case .swinIRMedium2x: "SwinIR, a Swin transformer (12 million parameters, 67 MB) trained for real-world photos and video, at 2×. Transformers look at wider context than Real-ESRGAN, giving cleaner textures — at many times the cost."
             case .swinIRMedium: "SwinIR Medium (12 million parameters, 67 MB) at 4×: transformer-quality detail for small videos. Best on Pro, Max or Ultra chips."
             case .swinIRLarge: "SwinIR Large (28 million parameters, 142 MB) at 4×: the biggest and most detailed model here. Made for Max and Ultra chips with lots of GPU cores and memory."
+            case .swinIRLargeSmooth: "SwinIR Large trained for faithfulness instead of crispness: the same 142 MB transformer, inventing less detail — natural-looking skin, text and fine patterns on the biggest Macs."
             }
         }
 
@@ -58,6 +60,7 @@ enum Upscaler {
             case .swinIRMedium2x: RealESRGAN.swinMedium2x
             case .swinIRMedium: RealESRGAN.swinMedium
             case .swinIRLarge: RealESRGAN.swinLarge
+            case .swinIRLargeSmooth: RealESRGAN.swinLargeSmooth
             case .appleSuperResolution, .basic: nil
             }
         }

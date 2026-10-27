@@ -86,6 +86,13 @@ enum RealESRGAN {
         downloadSize: 142_473_939, sha256: "99adfa91350a84c99e946c1eb3d8fce34bc28f57d807b09dc8fe40a316328c0a",
         architecture: .swinIR, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
 
+    /// SwinIR-L trained for faithfulness (PSNR) instead of crispness: the same size, fewer invented details.
+    static let swinLargeSmooth = Model(
+        file: "003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_PSNR.pth",
+        url: URL(string: "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_PSNR.pth")!,
+        downloadSize: 142_473_947, sha256: "450be6eac63a59959b55a83df6743444de9f018547f81d16f699b3680d366ad7",
+        architecture: .swinIR, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+
     static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appending(path: "LiveWallpaper/Models", directoryHint: .isDirectory)

@@ -45,7 +45,7 @@ enum ModelAdvisor {
         case .realESRNetLarge: (4.9, 1_600_000_000, 8)
         case .swinIRMedium2x: (14.5, 2_000_000_000, 16)
         case .swinIRMedium: (14.8, 2_400_000_000, 16)
-        case .swinIRLarge: (29.5, 3_400_000_000, 32)
+        case .swinIRLarge, .swinIRLargeSmooth: (29.5, 3_400_000_000, 32)
         case .appleSuperResolution, .basic: nil
         }
     }
@@ -59,11 +59,11 @@ enum ModelAdvisor {
         case .realESRGAN, .realESRGANAnime: 3
         case .realESRGANLarge2x, .realESRGANLarge, .realESRNetLarge: 4
         case .swinIRMedium2x, .swinIRMedium: 5
-        case .swinIRLarge: 6
+        case .swinIRLarge, .swinIRLargeSmooth: 6
         }
     }
 
-    private static let specialists: Set<Upscaler.Engine> = [.realESRGANAnime, .realESRNetLarge]
+    private static let specialists: Set<Upscaler.Engine> = [.realESRGANAnime, .realESRNetLarge, .swinIRLargeSmooth]
 
     /// Approximate peak memory for upscaling one `input`-sized frame (bytes). Networks run in tiles, so it's
     /// mostly a fixed cost plus the enlarged output frame.
@@ -99,6 +99,7 @@ enum ModelAdvisor {
         case .realESRGANLarge, .realESRNetLarge: "Slow"
         case .swinIRMedium2x, .swinIRMedium: "Very slow"
         case .swinIRLarge: "Slowest, sharpest"
+        case .swinIRLargeSmooth: "Slowest"
         }
     }
 
