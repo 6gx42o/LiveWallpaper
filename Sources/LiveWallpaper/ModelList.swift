@@ -10,10 +10,11 @@ enum ModelConsent {
         let alert = NSAlert()
         if let model = engine.esrgan {
             alert.messageText = "Download \(engine.title)?"
-            alert.informativeText = "Upscaling uses the open-source \(engine.title) model (\(TransferProgress.size(model.downloadSize)), the official file from github.com/xinntao/Real-ESRGAN). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
+            let project = model.url.pathComponents.dropFirst().prefix(2).joined(separator: "/") // e.g. xinntao/Real-ESRGAN
+            alert.informativeText = "Upscaling uses the open-source \(engine.title) model (\(TransferProgress.size(model.downloadSize)), the official file from github.com/\(project)). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
         } else {
             alert.messageText = "Download Apple's upscaling model?"
-            alert.informativeText = "Apple Super Resolution needs a model (about \(TransferProgress.size(ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0))) that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose a Real-ESRGAN model for one you can delete."
+            alert.informativeText = "Apple Super Resolution needs a model (about \(TransferProgress.size(ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0))) that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose a Real-ESRGAN or SwinIR model for one you can delete."
         }
         alert.addButton(withTitle: "Download & Upscale")
         alert.addButton(withTitle: "Use Basic Upscaling")
@@ -26,33 +27,60 @@ enum ModelConsent {
     }
 }
 
-/// Every upscaler with what it needs on this Mac: download status, RAM for `input`, whether it can run
-/// (and why not), the recommendation, and Download / Delete actions.
+/// Every upscaler with what it needs on this Mac: download status, RAM and time for `input`, whether this
+/// Mac can handle it (greyed out with the reason if not), the three per-Mac picks, and Download / Delete.
 struct ModelList: View {
     @ObservedObject var model: AppModel
     /// Source size the RAM estimates are for.
     let input: CGSize
     let inputLabel: String
-    /// Highlights and lets the user pick an engine (nil = informational, e.g. in Settings).
+    /// Highlights and lets the user pick an engine (nil = informational).
     var selection: Binding<Upscaler.Engine>?
     var compact = false
     /// Which engines to list (Settings shows only the selected one).
     var engines: [Upscaler.Engine] = Upscaler.Engine.allCases
 
     var body: some View {
-        let recommended = ModelAdvisor.recommendation(input: input)
+        let picks = ModelAdvisor.picks(input: input)
         VStack(alignment: .leading, spacing: 8) {
-            Label {
-                Text("Recommended for your \(SystemInfo.chip) with \(SystemInfo.bytes(SystemInfo.totalMemory)): **\(recommended.engine.title)**. \(recommended.reason)")
-            } icon: { Image(systemName: "sparkles") }
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                pickRow("Recommended for speed", "hare.fill", .blue, picks.speed,
+                        info: "The sharpest model that still upscales quickly on this Mac — about 1.5 s a frame or less. It's a balance, not just the fastest model: bigger Macs get bigger models here.")
+                pickRow("Recommended for quality", "sparkles", .purple, picks.quality,
+                        info: "The best-looking results this Mac can produce in a reasonable time — up to about 15 s a frame, so a 30-second clip finishes in a few hours at most.")
+                pickRow("Max for this Mac", "gauge.with.dots.needle.100percent", .orange, picks.max,
+                        info: "The biggest model this Mac can handle at all. Models beyond it are greyed out: they'd need more memory than this Mac can spare, or a faster GPU (they'd take over 30 s a frame).")
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             ForEach(engines, id: \.self) { engine in
-                row(engine, recommended: engine == recommended.engine)
+                row(engine, picks: picks)
             }
         }
     }
 
-    @ViewBuilder private func row(_ engine: Upscaler.Engine, recommended: Bool) -> some View {
+    private func pickRow(_ title: String, _ symbol: String, _ color: Color, _ pick: (engine: Upscaler.Engine, reason: String), info: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol).foregroundStyle(color).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(title).foregroundStyle(.secondary)
+                    InfoButton(info)
+                }
+                .font(.caption)
+                Text(pick.engine.title).fontWeight(.medium)
+                Text(pick.reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if let selection {
+                Button(selection.wrappedValue == pick.engine ? "In Use" : "Use") { selection.wrappedValue = pick.engine }
+                    .controlSize(.small)
+                    .disabled(selection.wrappedValue == pick.engine)
+            }
+        }
+    }
+
+    @ViewBuilder private func row(_ engine: Upscaler.Engine, picks: ModelAdvisor.Picks) -> some View {
         let availability = ModelAdvisor.availability(engine, input: input)
         let isSelected = selection?.wrappedValue == engine
         VStack(alignment: .leading, spacing: 4) {
@@ -64,7 +92,10 @@ struct ModelList: View {
                 }
                 Text(engine.title).fontWeight(.medium).lineLimit(1).fixedSize()
                 InfoButton(engine.summary)
-                if recommended { badge("Recommended", .green).fixedSize() }
+                if engine == picks.speed.engine { badge("Speed pick", .blue).fixedSize() }
+                if engine == picks.quality.engine { badge("Quality pick", .purple).fixedSize() }
+                if engine == picks.max.engine { badge("Max for this Mac", .orange).fixedSize() }
+                if !availability.canRun { badge("Too much for this Mac", .secondary).fixedSize() }
                 badge(ModelAdvisor.speedLabel(engine), .secondary).fixedSize()
                 Spacer(minLength: 4)
                 actions(engine).fixedSize()
@@ -96,7 +127,9 @@ struct ModelList: View {
         }
         .padding(compact ? 8 : 10)
         .background(isSelected ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .opacity(availability.canRun ? 1 : 0.75)
+        // Greyed out when this Mac can't handle it; the reason stays readable.
+        .saturation(availability.canRun ? 1 : 0)
+        .opacity(availability.canRun ? 1 : 0.55)
         .contentShape(Rectangle())
         .onTapGesture { if let selection, availability.canRun { selection.wrappedValue = engine } }
     }

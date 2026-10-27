@@ -59,7 +59,9 @@ final class UpscaleStudio: ObservableObject {
                 thumbnail = (try? await generator.image(at: .zero)).map { NSImage(cgImage: $0.image, size: .zero) }
                 video = playable
                 self.info = info
-                engine = ModelAdvisor.recommendation(input: info.size).engine
+                // Keep the chosen upscaler if it can handle this video, else the speed pick for it.
+                engine = ModelAdvisor.availability(Upscaler.Engine.current, input: info.size).canRun
+                    ? .current : ModelAdvisor.picks(input: info.size).speed.engine
             } catch {
                 message = ("“\(url.lastPathComponent)” can't be upscaled: \(error.localizedDescription) (\(Library.supportedFormats))", true)
             }
@@ -144,7 +146,7 @@ struct UpscaleView: View {
                 .buttonStyle(.plain)
                 HStack(spacing: 4) {
                     Text("Models on this Mac").font(.headline)
-                    InfoButton("Every upscaler, smallest to largest, with how much memory and time each needs on this Mac and whether it can run. Bigger models add more detail but need more memory and a faster GPU. Click one to choose it; download or delete Real-ESRGAN models here.")
+                    InfoButton("Every upscaler, smallest to largest, with how much memory and time each needs on this Mac and whether it can run. Bigger models add more detail but need more memory and a faster GPU. The three picks at the top are worked out for this Mac; models it can't handle are greyed out with the reason. Click one to choose it; download or delete models here.")
                 }
                 ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video",
                           selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 }))

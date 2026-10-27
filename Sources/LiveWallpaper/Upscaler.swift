@@ -8,40 +8,56 @@ import os
 /// can't run falls back to Lanczos and says why.
 enum Upscaler {
     /// The user's choice in Settings.
-    /// Smallest to largest model; `realESRGAN` keeps its old name so saved settings carry over.
+    /// Smallest to largest; `realESRGAN` (Medium) keeps its old name so saved settings carry over.
     enum Engine: String, CaseIterable {
-        case realESRGANSmall, realESRGAN, realESRGANLarge2x, realESRGANLarge, appleSuperResolution, basic
+        case basic, appleSuperResolution, realESRGANSmall, realESRGAN, realESRGANAnime, realESRGANLarge2x, realESRGANLarge,
+             realESRNetLarge, swinIRMedium2x, swinIRMedium, swinIRLarge
 
         var title: String {
             switch self {
+            case .basic: "Basic (no download)"
+            case .appleSuperResolution: "Apple Super Resolution"
             case .realESRGANSmall: "Real-ESRGAN Small"
             case .realESRGAN: "Real-ESRGAN Medium"
+            case .realESRGANAnime: "Real-ESRGAN Anime"
             case .realESRGANLarge2x: "Real-ESRGAN Large 2×"
             case .realESRGANLarge: "Real-ESRGAN Large 4×"
-            case .appleSuperResolution: "Apple Super Resolution"
-            case .basic: "Basic (no download)"
+            case .realESRNetLarge: "Real-ESRGAN Large 4× Smooth"
+            case .swinIRMedium2x: "SwinIR Medium 2×"
+            case .swinIRMedium: "SwinIR Medium 4×"
+            case .swinIRLarge: "SwinIR Large 4×"
             }
         }
 
-        /// What it's good at, in a sentence (shown behind the ⓘ button).
+        /// What it's good at, in a sentence or two (shown behind the ⓘ button).
         var summary: String {
             switch self {
-            case .realESRGANSmall: "The lightest Real-ESRGAN network (16 layers, 2.5 MB). Fastest of the ML upscalers and gentlest on older or 8 GB Macs. Trained on animation, so it's best for cartoons, anime, games and graphics."
-            case .realESRGAN: "The general-purpose Real-ESRGAN video network (32 layers, 4.9 MB). A good balance of sharpness and speed for real-world footage on most Apple silicon Macs."
-            case .realESRGANLarge2x: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 2×. Much more detail than Medium for videos that are only a little too small, like 1080p on a Retina display. Several times slower."
-            case .realESRGANLarge: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 4×. The sharpest results for very small videos, and by far the slowest — best on Pro, Max or Ultra chips with plenty of memory."
-            case .appleSuperResolution: "Apple's own video upscaler, built into macOS 26. Light on memory and keeps motion smooth between frames. macOS downloads and manages its model, so apps can't delete it."
             case .basic: "Classic Lanczos resizing with a little sharpening. Needs no download and is instant, but can't add real detail."
+            case .appleSuperResolution: "Apple's own video upscaler, built into macOS 26. Light on memory and keeps motion smooth between frames. macOS downloads and manages its model, so apps can't delete it."
+            case .realESRGANSmall: "The lightest Real-ESRGAN network (16 layers, 2.5 MB). Fastest of the ML upscalers and gentle on 8 GB Macs. Trained on animation, so it's best for cartoons, games and graphics."
+            case .realESRGAN: "The general-purpose Real-ESRGAN video network (32 layers, 4.9 MB). A good balance of sharpness and speed for real-world footage on most Macs."
+            case .realESRGANAnime: "A 6-block version of the full Real-ESRGAN network (18 MB), trained on anime: clean lines and flat colours at a fraction of Large's cost. Not meant for real-world footage."
+            case .realESRGANLarge2x: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 2×. Much more detail than Medium for videos that are only a little too small, like 1080p on a Retina display."
+            case .realESRGANLarge: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 4×: crisp, detailed results for small videos."
+            case .realESRNetLarge: "The same network as Large 4×, trained for faithfulness instead of crispness: it invents less detail, so it's a little softer but has fewer artefacts on faces and text."
+            case .swinIRMedium2x: "SwinIR, a Swin transformer (12 million parameters, 67 MB) trained for real-world photos and video, at 2×. Transformers look at wider context than Real-ESRGAN, giving cleaner textures — at many times the cost."
+            case .swinIRMedium: "SwinIR Medium (12 million parameters, 67 MB) at 4×: transformer-quality detail for small videos. Best on Pro, Max or Ultra chips."
+            case .swinIRLarge: "SwinIR Large (28 million parameters, 142 MB) at 4×: the biggest and most detailed model here. Made for Max and Ultra chips with lots of GPU cores and memory."
             }
         }
 
-        /// The Real-ESRGAN network this engine runs, if it's one of them.
+        /// The downloadable network this engine runs, if it's one of them.
         var esrgan: RealESRGAN.Model? {
             switch self {
             case .realESRGANSmall: RealESRGAN.small
             case .realESRGAN: RealESRGAN.medium
+            case .realESRGANAnime: RealESRGAN.anime
             case .realESRGANLarge2x: RealESRGAN.large2x
             case .realESRGANLarge: RealESRGAN.large
+            case .realESRNetLarge: RealESRGAN.largeSmooth
+            case .swinIRMedium2x: RealESRGAN.swinMedium2x
+            case .swinIRMedium: RealESRGAN.swinMedium
+            case .swinIRLarge: RealESRGAN.swinLarge
             case .appleSuperResolution, .basic: nil
             }
         }
@@ -117,14 +133,14 @@ enum Upscaler {
         var reason: String?
         do {
             switch engine {
-            case .realESRGANSmall, .realESRGAN, .realESRGANLarge2x, .realESRGANLarge:
+            case _ where engine.esrgan != nil:
                 try await realESRGAN(src, to: dst, target: target, engine: engine, allowModelDownload: allowModelDownload, progress: progress)
                 return Result(method: .realESRGAN(engine))
             case .appleSuperResolution:
                 guard #available(macOS 26.0, *) else { throw failure("Apple Super Resolution needs macOS 26 or later.") }
                 try await superResolve(src, to: dst, target: target, allowModelDownload: allowModelDownload, progress: progress)
                 return Result(method: .superResolution)
-            case .basic:
+            default:
                 break
             }
         } catch {

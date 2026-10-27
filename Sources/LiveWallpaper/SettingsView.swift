@@ -194,13 +194,18 @@ struct SettingsPane: View {
                       info: "The screen size wallpapers are judged and upscaled against. Native is your display's own pixel count, so upscaled wallpapers are as sharp as your screen can show.")
             }
             Picker(selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
-                ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(Upscaler.Engine.allCases, id: \.self) { engine in
+                    let canRun = ModelAdvisor.availability(engine).canRun
+                    Text(engine.title + (canRun ? "" : " — too much for this Mac")).tag(engine)
+                        .selectionDisabled(!canRun)
+                }
             } label: {
                 label("Upscaler", info: "Which model the Upscale buttons use. Small models are fast and light; Large ones add more detail but need a powerful Mac and lots of time. The card below shows how it would run on this Mac.")
             }
-            ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video", compact: true, engines: [model.upscaler])
+            ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video",
+                      selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 }), compact: true, engines: [model.upscaler])
             Toggle(isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 })) {
-                label("Ask after upscaling", "Offer to keep or delete the Real-ESRGAN model each time it's used.",
+                label("Ask after upscaling", "Offer to keep or delete the downloaded model each time it's used.",
                       info: "After each upscale, asks whether to keep the model for next time or delete it to free disk space.")
             }
             Picker(selection: bind(\.upscaleTile)) {

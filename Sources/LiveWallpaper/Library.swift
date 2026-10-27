@@ -334,7 +334,7 @@ final class Library {
         guard hasWarning || Prefs.shared.showImportTips else { return }
         let lowResolution = issues.contains { $0.isLowResolution && $0.severity == .warning }
         // Settings › Upscale low-resolution imports: only when no download is needed (downloads always ask first).
-        if lowResolution, Prefs.shared.autoUpscale, !Upscaler.needsModelDownload(engine: .current, video: info.size) {
+        if lowResolution, Prefs.shared.autoUpscale, !Upscaler.needsModelDownload(engine: ModelAdvisor.engine(for: info.size), video: info.size) {
             upscale(converted, allowModelDownload: false)
             notices.append(Notice(kind: .info, title: "Upscaling “\(source.lastPathComponent)” automatically",
                                   reason: issues.map { "• " + $0.text }.joined(separator: "\n")))
@@ -364,7 +364,8 @@ final class Library {
                 let out = freeURL(for: "\(name) (Upscaled)")
                 let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
                 defer { try? FileManager.default.removeItem(at: tmp) }
-                let result = try await Upscaler.upscale(url, to: tmp, target: target, engine: .current, allowModelDownload: allowModelDownload) { label, fraction, received, total in
+                let engine = ModelAdvisor.engine(for: info.size)
+                let result = try await Upscaler.upscale(url, to: tmp, target: target, engine: engine, allowModelDownload: allowModelDownload) { label, fraction, received, total in
                     self.setProgress(label, fraction, received, total)
                 }
                 try FileManager.default.moveItem(at: tmp, to: out)
@@ -375,7 +376,7 @@ final class Library {
                     kind: .info,
                     title: "Upscaled “\(name)” to \(Int(target.width))×\(Int(target.height))",
                     reason: "Used \(result.method.name). The original is kept; the upscaled copy is now in your library.",
-                    details: result.fallbackReason.map { "\(Upscaler.Engine.current.title) wasn't used: \($0)" }
+                    details: result.fallbackReason.map { "\(engine.title) wasn't used: \($0)" }
                 ))
                 reload()
                 onUpscaled?(url, out, result.method)

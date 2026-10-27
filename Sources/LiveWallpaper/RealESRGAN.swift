@@ -4,13 +4,14 @@ import Foundation
 import Metal
 import MetalPerformanceShadersGraph
 
-/// Real-ESRGAN (BSD-3, © Xintao Wang) in four sizes, run on the GPU with Metal Performance Shaders Graph.
+/// The downloadable upscaling networks — Real-ESRGAN (BSD-3, © Xintao Wang) and SwinIR (Apache-2.0,
+/// © Jingyun Liang) — run on the GPU with Metal Performance Shaders Graph.
 /// Only the official weights files are downloaded (never code), on request, into LiveWallpaper's own
 /// folder — so they can be deleted any time.
 enum RealESRGAN {
     /// One downloadable network.
     struct Model: Hashable, Sendable {
-        enum Architecture: Hashable, Sendable { case compact, rrdb }
+        enum Architecture: Hashable, Sendable { case compact, rrdb, swinIR }
         let file: String
         let url: URL
         let downloadSize: Int64
@@ -54,6 +55,37 @@ enum RealESRGAN {
         downloadSize: 67_040_989, sha256: "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
         architecture: .rrdb, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
 
+    /// A 6-block RRDB network trained on anime; sharp line art at a fraction of Large's cost.
+    static let anime = Model(
+        file: "RealESRGAN_x4plus_anime_6B.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth")!,
+        downloadSize: 17_938_799, sha256: "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+        architecture: .rrdb, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// Large 4×'s network trained for fidelity instead of crispness: fewer invented details, a little softer.
+    static let largeSmooth = Model(
+        file: "RealESRNet_x4plus.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth")!,
+        downloadSize: 67_040_989, sha256: "a820b9bde89a874d7599d545567308ce6c128fc8754a53208eda016d40aa81df",
+        architecture: .rrdb, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// SwinIR-M (Apache-2.0, © Jingyun Liang): a 12-million-parameter Swin transformer for real-world video, 2×.
+    static let swinMedium2x = Model(
+        file: "003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x2_GAN.pth",
+        url: URL(string: "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x2_GAN.pth")!,
+        downloadSize: 66_974_517, sha256: "f397408977a3e07eb06afb7238d453a12ef35ebab7328a54241f307860dbe342",
+        architecture: .swinIR, scale: 2, maxInput: CGSize(width: 2560, height: 1600))
+    /// SwinIR-M at 4×.
+    static let swinMedium = Model(
+        file: "003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth",
+        url: URL(string: "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth")!,
+        downloadSize: 67_129_861, sha256: "b9afb61e65e04eb7f8aba5095d070bbe9af28df76acd0c9405aeb33b814bcfc6",
+        architecture: .swinIR, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// SwinIR-L: the largest, a 28-million-parameter Swin transformer at 4×, for the biggest Macs.
+    static let swinLarge = Model(
+        file: "003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_GAN.pth",
+        url: URL(string: "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_GAN.pth")!,
+        downloadSize: 142_473_939, sha256: "99adfa91350a84c99e946c1eb3d8fce34bc28f57d807b09dc8fe40a316328c0a",
+        architecture: .swinIR, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+
     static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appending(path: "LiveWallpaper/Models", directoryHint: .isDirectory)
@@ -95,7 +127,7 @@ enum RealESRGAN {
         let archive = try StoredZip(url: model.fileURL)
         guard let pickle = archive.entry(suffix: "/data.pkl") else { throw incomplete }
         var weights: [String: (shape: [Int], values: [Float])] = [:]
-        for (name, tensor) in try TorchPickle.tensors(pickle) {
+        for (name, tensor) in try TorchPickle.tensors(pickle) where tensor.isFloat {
             let count = tensor.shape.reduce(1, *)
             guard let data = archive.entry(suffix: "/data/\(tensor.storage)"),
                   data.count >= (tensor.offset + count) * 4 else { throw incomplete }
@@ -134,10 +166,13 @@ enum RealESRGAN {
             self.width = width
             self.height = height
             scale = model.scale
-            // Even sides (the 2× model folds pixels in pairs); the whole frame if it fits in one tile.
-            tileWidth = min(width, tile + 32) & ~1
-            tileHeight = min(height, tile + 32) & ~1
-            overlap = min(16, min(tileWidth, tileHeight) / 4)
+            // Even sides (the 2× models fold pixels in pairs), multiples of 8 for SwinIR's attention windows;
+            // the whole frame if it fits in one tile.
+            // SwinIR's attention sees further than the convolutional networks, so it keeps more context per side.
+            let align = model.architecture == .swinIR ? 8 : 2, context = model.architecture == .swinIR ? 32 : 16
+            tileWidth = min(width, tile + 2 * context) / align * align
+            tileHeight = min(height, tile + 2 * context) / align * align
+            overlap = min(context, min(tileWidth, tileHeight) / 4)
             dataType = fullPrecision ? .float32 : .float16
             // Frames travel as 32-bit floats (Swift has no Float16 on Intel); the graph casts to half precision itself.
             guard let buffer = device.makeBuffer(length: tileWidth * tileHeight * 3 * 4, options: .storageModeShared)
@@ -151,7 +186,11 @@ enum RealESRGAN {
             input = graph.placeholder(shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float32, name: "input")
             let builder = Builder(graph: graph, weights: weights, dataType: dataType)
             let x = fullPrecision ? input : graph.cast(input, to: .float16, name: "in16")
-            var y = try model.architecture == .compact ? builder.compact(x) : builder.rrdb(x, scale: model.scale)
+            var y = switch model.architecture {
+            case .compact: try builder.compact(x)
+            case .rrdb: try builder.rrdb(x, scale: model.scale)
+            case .swinIR: try builder.swinIR(x, scale: model.scale, height: tileHeight, width: tileWidth)
+            }
             y = graph.clamp(y, min: builder.scalar(0), max: builder.scalar(1), name: nil)
             output = fullPrecision ? y : graph.cast(y, to: .float32, name: "out32")
         }
@@ -233,10 +272,13 @@ enum RealESRGAN {
         let graph: MPSGraph
         let weights: [String: (shape: [Int], values: [Float])]
         let dataType: MPSDataType
-        private let descriptor = MPSGraphConvolution2DOpDescriptor(
-            strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1, groups: 1,
-            paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1,
-            paddingStyle: .explicit, dataLayout: .NHWC, weightsLayout: .OIHW)!
+        /// 3×3 convolutions pad by one pixel; 1×1 ones don't pad.
+        private func descriptor(padding: Int) -> MPSGraphConvolution2DOpDescriptor {
+            MPSGraphConvolution2DOpDescriptor(
+                strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1, groups: 1,
+                paddingLeft: padding, paddingRight: padding, paddingTop: padding, paddingBottom: padding,
+                paddingStyle: .explicit, dataLayout: .NHWC, weightsLayout: .OIHW)!
+        }
 
         init(graph: MPSGraph, weights: [String: (shape: [Int], values: [Float])], dataType: MPSDataType) {
             self.graph = graph
@@ -246,21 +288,26 @@ enum RealESRGAN {
 
         func scalar(_ value: Double) -> MPSGraphTensor { graph.constant(value, dataType: dataType) }
 
-        private func constant(_ name: String, shape: [Int]? = nil) throws -> MPSGraphTensor {
+        private func constant(_ name: String, shape: [Int]? = nil, type: MPSDataType? = nil) throws -> MPSGraphTensor {
             guard let tensor = weights[name] else { throw RealESRGAN.incomplete }
             let data = tensor.values.withUnsafeBufferPointer { Data(buffer: $0) }
             let value = graph.constant(data, shape: (shape ?? tensor.shape) as [NSNumber], dataType: .float32)
-            return dataType == .float32 ? value : graph.cast(value, to: dataType, name: name + ".half")
+            let target = type ?? dataType
+            return target == .float32 ? value : graph.cast(value, to: target, name: name + ".half")
         }
 
-        /// 3×3 convolution (PyTorch `name.weight` / `name.bias`).
-        private func conv(_ x: MPSGraphTensor, _ name: String) throws -> MPSGraphTensor {
-            let y = graph.convolution2D(x, weights: try constant(name + ".weight"), descriptor: descriptor, name: nil)
+        private func wide(_ x: MPSGraphTensor) -> MPSGraphTensor { dataType == .float32 ? x : graph.cast(x, to: .float32, name: "wide") }
+        private func narrow(_ x: MPSGraphTensor) -> MPSGraphTensor { dataType == .float32 ? x : graph.cast(x, to: dataType, name: "narrow") }
+
+        /// 3×3 or 1×1 convolution (PyTorch `name.weight` / `name.bias`), in `type` (default: the network's precision).
+        private func conv(_ x: MPSGraphTensor, _ name: String, type: MPSDataType? = nil) throws -> MPSGraphTensor {
+            let kernel = weights[name + ".weight"]?.shape.last ?? 3
+            let y = graph.convolution2D(x, weights: try constant(name + ".weight", type: type), descriptor: descriptor(padding: kernel / 2), name: nil)
             let channels = weights[name + ".bias"]?.shape.first ?? 0
-            return graph.addition(y, try constant(name + ".bias", shape: [1, 1, 1, channels]), name: nil)
+            return graph.addition(y, try constant(name + ".bias", shape: [1, 1, 1, channels], type: type), name: nil)
         }
 
-        private func lrelu(_ x: MPSGraphTensor) -> MPSGraphTensor { graph.leakyReLU(with: x, alpha: 0.2, name: nil) }
+        private func lrelu(_ x: MPSGraphTensor, _ slope: Double = 0.2) -> MPSGraphTensor { graph.leakyReLU(with: x, alpha: slope, name: nil) }
 
         private func up2(_ x: MPSGraphTensor) -> MPSGraphTensor {
             let shape = x.shape!.map(\.intValue)
@@ -309,6 +356,161 @@ enum RealESRGAN {
             y = lrelu(try conv(up2(y), "conv_up1"))
             y = lrelu(try conv(up2(y), "conv_up2"))
             return try conv(lrelu(try conv(y, "conv_hr")), "conv_last")
+        }
+
+        // MARK: SwinIR
+
+        /// SwinIR for real-world SR ("nearest+conv"): conv → residual Swin transformer blocks (shifted 8×8 window
+        /// attention) → conv, then the same nearest-neighbour upsampling tail as RRDBNet. `height`/`width` are the
+        /// tile size (multiples of 8), which fixes the window layout and the shifted-window mask.
+        func swinIR(_ input: MPSGraphTensor, scale: Int, height: Int, width: Int) throws -> MPSGraphTensor {
+            let mean = graph.constant(Data([Float(0.4488), 0.4371, 0.4040].withUnsafeBufferPointer { Data(buffer: $0) }),
+                                      shape: [1, 1, 1, 3], dataType: .float32)
+            let meanTyped = dataType == .float32 ? mean : graph.cast(mean, to: dataType, name: "mean")
+            let x = graph.subtraction(input, meanTyped, name: nil)
+            guard let dim = weights["conv_first.weight"]?.shape.first else { throw RealESRGAN.incomplete }
+            let first = try conv(x, "conv_first")
+
+            // Transformer body works on tokens: [H·W, C]. Its residual stream stays in float32 (mixed precision):
+            // SwinIR-M's last block reaches ~220,000, beyond half precision; the heavy maths still runs in half.
+            let tokens = height * width
+            var t = wide(try layerNorm(graph.reshape(first, shape: [tokens, dim] as [NSNumber], name: nil), "patch_embed.norm"))
+            var layer = 0
+            while weights["layers.\(layer).residual_group.blocks.0.norm1.weight"] != nil {
+                let start = t
+                var block = 0
+                while weights["layers.\(layer).residual_group.blocks.\(block).norm1.weight"] != nil {
+                    t = try swinBlock(t, "layers.\(layer).residual_group.blocks.\(block)", dim: dim, height: height, width: width,
+                                      shift: block % 2 == 1 ? 4 : 0)
+                    block += 1
+                }
+                // Residual Swin Transformer Block: a conv over the image, then back to tokens, plus the skip.
+                let image = graph.reshape(t, shape: [1, height, width, dim] as [NSNumber], name: nil)
+                let convolved = try residualConv(image, "layers.\(layer).conv", type: .float32)
+                t = graph.addition(graph.reshape(convolved, shape: [tokens, dim] as [NSNumber], name: nil), start, name: nil)
+                layer += 1
+            }
+            guard layer > 0 else { throw RealESRGAN.incomplete }
+            t = try layerNorm(t, "norm")
+            let body = graph.reshape(t, shape: [1, height, width, dim] as [NSNumber], name: nil)
+            var y = graph.addition(try residualConv(body, "conv_after_body"), first, name: nil)
+
+            y = lrelu(try conv(y, "conv_before_upsample.0"), 0.01) // PyTorch's default LeakyReLU slope here
+            y = lrelu(try conv(up2(y), "conv_up1"))
+            if scale == 4 { y = lrelu(try conv(up2(y), "conv_up2")) }
+            y = try conv(lrelu(try conv(y, "conv_hr")), "conv_last")
+            return graph.addition(y, meanTyped, name: nil)
+        }
+
+        /// "1conv" (one 3×3 conv) or "3conv" (3×3 → 1×1 → 3×3 with LeakyReLUs), whichever the weights contain.
+        private func residualConv(_ x: MPSGraphTensor, _ name: String, type: MPSDataType? = nil) throws -> MPSGraphTensor {
+            if weights[name + ".weight"] != nil { return try conv(x, name, type: type) }
+            return try conv(lrelu(try conv(lrelu(try conv(x, name + ".0", type: type)), name + ".2", type: type)), name + ".4", type: type)
+        }
+
+        /// Always in float32: SwinIR's residual stream grows large enough that squaring it overflows half precision.
+        private func layerNorm(_ x: MPSGraphTensor, _ name: String) throws -> MPSGraphTensor {
+            let wide = dataType == .float32 ? x : graph.cast(x, to: .float32, name: "ln32")
+            let mean = graph.mean(of: wide, axes: [-1], name: nil)
+            let variance = graph.variance(of: wide, mean: mean, axes: [-1], name: nil)
+            guard let gamma = weights[name + ".weight"], let beta = weights[name + ".bias"] else { throw RealESRGAN.incomplete }
+            func f32(_ v: [Float]) -> MPSGraphTensor {
+                graph.constant(v.withUnsafeBufferPointer { Data(buffer: $0) }, shape: [v.count as NSNumber], dataType: .float32)
+            }
+            let y = graph.normalize(wide, mean: mean, variance: variance, gamma: f32(gamma.values), beta: f32(beta.values), epsilon: 1e-5, name: nil)
+            return dataType == .float32 ? y : graph.cast(y, to: dataType, name: "ln16")
+        }
+
+        /// y = x·Wᵀ + b for PyTorch `nn.Linear` weights.
+        private func linear(_ x: MPSGraphTensor, _ name: String) throws -> MPSGraphTensor {
+            let w = graph.transposeTensor(try constant(name + ".weight"), dimension: 0, withDimension: 1, name: nil)
+            return graph.addition(graph.matrixMultiplication(primary: x, secondary: w, name: nil), try constant(name + ".bias"), name: nil)
+        }
+
+        private func gelu(_ x: MPSGraphTensor) -> MPSGraphTensor {
+            let erf = graph.erf(with: graph.multiplication(x, scalar(1 / 2.0.squareRoot()), name: nil), name: nil)
+            return graph.multiplication(graph.multiplication(x, scalar(0.5), name: nil), graph.addition(erf, scalar(1), name: nil), name: nil)
+        }
+
+        /// Rolls an [H, W, C] image by `shift` along height and width (like `torch.roll`).
+        private func roll(_ x: MPSGraphTensor, _ shift: Int, height: Int, width: Int) -> MPSGraphTensor {
+            var y = x
+            for (axis, size) in [(0, height), (1, width)] {
+                let s = ((shift % size) + size) % size
+                guard s != 0 else { continue }
+                let head = graph.sliceTensor(y, dimension: axis, start: size - s, length: s, name: nil)
+                let tail = graph.sliceTensor(y, dimension: axis, start: 0, length: size - s, name: nil)
+                y = graph.concatTensors([head, tail], dimension: axis, name: nil)
+            }
+            return y
+        }
+
+        /// One Swin transformer block: (shifted) 8×8 window attention and an MLP, each with a residual.
+        private func swinBlock(_ x: MPSGraphTensor, _ name: String, dim: Int, height: Int, width: Int, shift: Int) throws -> MPSGraphTensor {
+            let ws = 8, n = ws * ws, windows = (height / ws) * (width / ws)
+            guard let table = weights[name + ".attn.relative_position_bias_table"] else { throw RealESRGAN.incomplete }
+            let heads = table.shape[1], headDim = dim / heads
+
+            var h = graph.reshape(try layerNorm(x, name + ".norm1"), shape: [height, width, dim] as [NSNumber], name: nil)
+            if shift > 0 { h = roll(h, -shift, height: height, width: width) }
+            // Partition into windows: [nW, 64, C].
+            h = graph.reshape(h, shape: [height / ws, ws, width / ws, ws, dim] as [NSNumber], name: nil)
+            h = graph.transpose(h, permutation: [0, 2, 1, 3, 4], name: nil)
+            h = graph.reshape(h, shape: [windows, n, dim] as [NSNumber], name: nil)
+
+            // Multi-head attention with the learned relative position bias (and the shifted-window mask).
+            var qkv = graph.reshape(try linear(h, name + ".attn.qkv"), shape: [windows, n, 3, heads, headDim] as [NSNumber], name: nil)
+            qkv = graph.transpose(qkv, permutation: [2, 0, 3, 1, 4], name: nil) // [3, nW, heads, 64, d]
+            func part(_ i: Int) -> MPSGraphTensor {
+                graph.reshape(graph.sliceTensor(qkv, dimension: 0, start: i, length: 1, name: nil),
+                              shape: [windows, heads, n, headDim] as [NSNumber], name: nil)
+            }
+            let q = graph.multiplication(part(0), scalar(1 / Double(headDim).squareRoot()), name: nil)
+            var attention = graph.matrixMultiplication(primary: q, secondary: graph.transposeTensor(part(1), dimension: 2, withDimension: 3, name: nil), name: nil)
+            attention = graph.addition(attention, positionBias(table.values, heads: heads), name: nil)
+            if shift > 0 { attention = graph.addition(attention, shiftMask(height: height, width: width, shift: shift), name: nil) }
+            attention = graph.softMax(with: attention, axis: 3, name: nil)
+            var out = graph.matrixMultiplication(primary: attention, secondary: part(2), name: nil) // [nW, heads, 64, d]
+            out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3], name: nil), shape: [windows, n, dim] as [NSNumber], name: nil)
+            out = try linear(out, name + ".attn.proj")
+
+            // Merge windows back into the image and undo the shift.
+            out = graph.reshape(out, shape: [height / ws, width / ws, ws, ws, dim] as [NSNumber], name: nil)
+            out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3, 4], name: nil), shape: [height, width, dim] as [NSNumber], name: nil)
+            if shift > 0 { out = roll(out, shift, height: height, width: width) }
+            let attended = graph.addition(x, wide(graph.reshape(out, shape: [height * width, dim] as [NSNumber], name: nil)), name: nil)
+
+            let mlp = try linear(gelu(try linear(try layerNorm(attended, name + ".norm2"), name + ".mlp.fc1")), name + ".mlp.fc2")
+            return graph.addition(attended, wide(mlp), name: nil)
+        }
+
+        /// The [heads, 64, 64] bias looked up from the relative position table (same index as SwinIR's buffer).
+        private func positionBias(_ table: [Float], heads: Int) -> MPSGraphTensor {
+            var bias = [Float](repeating: 0, count: heads * 64 * 64)
+            for i in 0..<64 {
+                for j in 0..<64 {
+                    let index = (i / 8 - j / 8 + 7) * 15 + (i % 8 - j % 8 + 7)
+                    for head in 0..<heads { bias[(head * 64 + i) * 64 + j] = table[index * heads + head] }
+                }
+            }
+            return typed(bias, shape: [heads, 64, 64])
+        }
+
+        /// -100 between tokens that came from different image regions after the cyclic shift, else 0: [nW, 1, 64, 64].
+        private func shiftMask(height: Int, width: Int, shift: Int) -> MPSGraphTensor {
+            func region(_ v: Int, _ size: Int) -> Int { v < size - 8 ? 0 : v < size - shift ? 1 : 2 }
+            let columns = width / 8, windows = (height / 8) * columns
+            var mask = [Float](repeating: 0, count: windows * 64 * 64)
+            for w in 0..<windows {
+                let ids = (0..<64).map { t in region((w / columns) * 8 + t / 8, height) * 3 + region((w % columns) * 8 + t % 8, width) }
+                for i in 0..<64 { for j in 0..<64 where ids[i] != ids[j] { mask[(w * 64 + i) * 64 + j] = -100 } }
+            }
+            return typed(mask, shape: [windows, 1, 64, 64])
+        }
+
+        private func typed(_ values: [Float], shape: [Int]) -> MPSGraphTensor {
+            let c = graph.constant(values.withUnsafeBufferPointer { Data(buffer: $0) }, shape: shape as [NSNumber], dataType: .float32)
+            return dataType == .float32 ? c : graph.cast(c, to: dataType, name: "const")
         }
 
         /// Residual dense block: five convs, each seeing everything before it.
@@ -361,11 +563,17 @@ private struct StoredZip {
 /// Only the handful of pickle opcodes PyTorch uses for a state dict are understood; nothing is executed —
 /// the only "calls" recognised are rebuilding a tensor and creating an ordered dictionary.
 enum TorchPickle {
-    struct Tensor { let storage: String; let offset: Int; let shape: [Int] }
+    struct Tensor {
+        let storage: String
+        let offset: Int
+        let shape: [Int]
+        /// float32 weights; other storages (e.g. SwinIR's integer index tables) are skipped.
+        var isFloat = true
+    }
 
     private final class Dict { var items: [(Value, Value)] = [] }
     private enum Value {
-        case none, int(Int), string(String), tuple([Value]), dict(Dict), global(String), storage(String), tensor(Tensor), other
+        case none, int(Int), string(String), tuple([Value]), dict(Dict), global(String), storage(String, isFloat: Bool), tensor(Tensor), other
     }
 
     static func tensors(_ data: Data) throws -> [(String, Tensor)] {
@@ -423,14 +631,15 @@ enum TorchPickle {
             case 0x88, 0x89, 0x4e: stack.append(op == 0x4e ? .none : .other) // NEWTRUE, NEWFALSE, NONE
             case 0x51: // BINPERSID: ('storage', type, key, location, size)
                 guard case .tuple(let id) = try pop(), id.count > 2, case .string(let key) = id[2] else { throw bad() }
-                stack.append(.storage(key))
+                let isFloat: Bool = if case .global("torch FloatStorage") = id[1] { true } else { false }
+                stack.append(.storage(key, isFloat: isFloat))
             case 0x52: // REDUCE
                 let args = try pop(), callable = try pop()
                 switch (callable, args) {
                 case (.global("torch._utils _rebuild_tensor_v2"), .tuple(let a)) where a.count >= 3:
-                    guard case .storage(let key) = a[0], case .int(let offset) = a[1], case .tuple(let dims) = a[2] else { throw bad() }
+                    guard case .storage(let key, let isFloat) = a[0], case .int(let offset) = a[1], case .tuple(let dims) = a[2] else { throw bad() }
                     let shape = try dims.map { dim -> Int in guard case .int(let n) = dim else { throw bad() }; return n }
-                    stack.append(.tensor(Tensor(storage: key, offset: offset, shape: shape)))
+                    stack.append(.tensor(Tensor(storage: key, offset: offset, shape: shape, isFloat: isFloat)))
                 case (.global("collections OrderedDict"), _): stack.append(.dict(Dict()))
                 default: stack.append(.other)
                 }

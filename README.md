@@ -10,16 +10,23 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
 - **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
 - **Upscaling, with models only when you ask.** Nothing is bundled with the app. Each model downloads only when you press **Download** (Settings or the Upscale tab) or **Upscale** (after asking), with a progress bar showing size downloaded, time left and time elapsed. Engines:
-  - **Real-ESRGAN, in four sizes** — the official weights, SHA-256-pinned, stored in LiveWallpaper's own folder and run on the GPU (Metal Performance Shaders Graph, half precision, in tiles so memory stays bounded). After each upscale you're asked whether to keep or delete the model; every model has **Delete…** (with confirmation).
+  - **Nine downloadable models, small to very large** — official Real-ESRGAN (BSD-3) and SwinIR (Apache-2.0) weights, SHA-256-pinned, stored in LiveWallpaper's own folder and run on the GPU (Metal Performance Shaders Graph, half precision with a float32 residual stream where needed, in tiles so memory stays bounded). Every network is checked against PyTorch: outputs match within 1–3 levels out of 255. After each upscale you're asked whether to keep or delete the model; every model has **Delete…**.
 
-    | Model | Weights | Best for | Speed on an M5 (10-core GPU) | Peak memory at 1080p |
+    | Model | Weights | Best for | Seconds per 1080p frame on an M5 (10-core GPU) | Needs |
     |---|---|---|---|---|
-    | Small (`realesr-animevideov3`) | 2.5 MB | 8 GB Macs; animation, games, graphics | ~1.0 s/frame | ~1.2 GB |
-    | Medium (`realesr-general-x4v3`) | 4.9 MB | most Macs; real-world footage | ~1.3 s/frame | ~1.2 GB |
-    | Large 2× (`RealESRGAN_x2plus`) | 64 MB | Pro/Max chips; videos only a little too small | ~2.5 s/frame | ~0.8 GB |
-    | Large 4× (`RealESRGAN_x4plus`) | 64 MB | Max/Ultra chips with 32 GB+; very small videos | ~14 s/frame | ~1.8 GB |
+    | Real-ESRGAN Small | 2.5 MB | 8 GB Macs; animation, games | ~0.5 | 8 GB |
+    | Real-ESRGAN Medium | 4.9 MB | most Macs; real-world footage | ~0.7 | 8 GB |
+    | Real-ESRGAN Anime | 18 MB | anime and cartoons | ~3.4 | 8 GB |
+    | Real-ESRGAN Large 2× | 64 MB | videos only a little too small | ~2.3 | 8 GB |
+    | Real-ESRGAN Large 4× | 64 MB | small videos | ~10.6 | 8 GB |
+    | Real-ESRGAN Large 4× Smooth | 64 MB | fewer invented details (faces, text) | ~10.1 | 8 GB |
+    | SwinIR Medium 2× / 4× | 67 MB | transformer detail; Pro chips | ~30 | 16 GB |
+    | SwinIR Large 4× | 142 MB | the most detail; Max and Ultra chips | ~61 | 32 GB |
 
-    The **Recommended** badge picks the largest model your chip, GPU core count and memory can run comfortably.
+  - **Three picks for your Mac.** Worked out from your GPU core count, memory and the video:
+    - **Recommended for speed** — the sharpest model that's still quick on your Mac (~1.5 s a frame or less). It's a balance, not just the fastest: a 24 GB Pro gets Large 2× where an 8 GB Air gets Medium.
+    - **Recommended for quality** — the best results within a reasonable time (~15 s a frame).
+    - **Max for this Mac** — the biggest model it can handle. Anything beyond is **greyed out** with the reason (not enough memory, or it would take over 30 s a frame). On 64 GB+ Macs, Automatic work size also uses bigger tiles (2× at 64 GB, 4× at 128 GB and up).
   - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it.
   - **Basic** — Lanczos scaling, no download.
 - **Advice for your Mac.** Each model shows how much RAM it needs for the video, roughly how long each frame takes on your GPU, whether it runs on your chip, why not if it can't (too much RAM, unsupported chip/macOS/resolution), and which one is **Recommended** for your chip and memory.
@@ -128,10 +135,10 @@ Sources/LiveWallpaper/
   EditorView.swift       trim / speed / framing / lock frame / quality editor
   VideoInfo.swift        video facts, quality checks against the display, edit model
   Upscaler.swift         upscaling engines (Real-ESRGAN, Apple Super Resolution, Lanczos) + frame pipeline
-  RealESRGAN.swift       the four models: download/verify/delete, PyTorch weight reader, networks on Metal (MPSGraph)
+  RealESRGAN.swift       the nine models: download/verify/delete, PyTorch weight reader, Real-ESRGAN + SwinIR on Metal (MPSGraph)
   UpscalerModel.swift    reports Apple's macOS-managed model
   VideoScanner.swift     "Find Videos" scan + results sheet
-  ModelAdvisor.swift     per-Mac RAM estimates, can-it-run reasons, recommendation
+  ModelAdvisor.swift     per-Mac time and memory estimates, can-it-run reasons, speed/quality/max picks
   ModelList.swift        model cards (download/delete, RAM, availability) + download consent
   SystemInfo.swift       chip, RAM, free memory, native display resolution, resolution setting
   MemoryCleaner.swift    Memory tab: usage, quit apps, purge
@@ -152,4 +159,4 @@ build.sh                 builds LiveWallpaper.app (VERSION=… stamps a version)
 
 MIT — see [LICENSE](LICENSE).
 
-Real-ESRGAN upscaling uses the model weights published by Xintao Wang et al. under the BSD-3-Clause license (https://github.com/xinntao/Real-ESRGAN); they're downloaded on request, not included in this repository.
+Real-ESRGAN upscaling uses the model weights published by Xintao Wang et al. under the BSD-3-Clause license (https://github.com/xinntao/Real-ESRGAN), and SwinIR the weights published by Jingyun Liang et al. under the Apache-2.0 license (https://github.com/JingyunLiang/SwinIR); they're downloaded on request, not included in this repository.

@@ -242,15 +242,16 @@ final class AppModel: ObservableObject {
     /// Which upscaler a video would get on this Mac with the current setting.
     func upscaleMethod(for url: URL) -> Upscaler.Method {
         guard let size = library.infos[url]?.size else { return .lanczos }
-        return Upscaler.method(for: upscaler, video: size)
+        return Upscaler.method(for: ModelAdvisor.engine(for: size), video: size)
     }
 
     /// Upscales a copy to cover the display. Models download only now, and only after asking.
     func upscale(_ url: URL) {
         guard let size = library.infos[url]?.size else { return }
+        let engine = ModelAdvisor.engine(for: size)
         var allowDownload = false
-        if Upscaler.needsModelDownload(engine: upscaler, video: size) {
-            guard let answer = ModelConsent.ask(for: upscaler) else { return }
+        if Upscaler.needsModelDownload(engine: engine, video: size) {
+            guard let answer = ModelConsent.ask(for: engine) else { return }
             allowDownload = answer
         }
         library.upscale(url, allowModelDownload: allowDownload)

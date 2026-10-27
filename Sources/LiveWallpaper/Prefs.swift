@@ -210,13 +210,28 @@ struct UpscaleSettings {
                         quality: Prefs.value("upscaleQuality", 0.85))
     }
 
-    /// Tile side in source pixels: the big network needs smaller tiles for the same memory.
+    /// Automatic tiles grow with memory: 2× on 64 GB Macs, 4× on 128 GB and up (fewer seams, faster).
+    private static var autoTileScale: Int { SystemInfo.totalMemory >= 128 << 30 ? 4 : SystemInfo.totalMemory >= 64 << 30 ? 2 : 1 }
+
+    /// Tile side in source pixels. The big networks need smaller tiles for the same memory.
     func tile(for model: RealESRGAN.Model) -> Int {
-        let base = model.architecture == .rrdb ? 256 : 512
+        let base = model.architecture == .compact ? 512 : 256
         switch tile {
-        case .auto: return base
+        case .auto: return base * Self.autoTileScale
         case .small: return base / 2
         case .large: return base * 2
         }
     }
+
+    /// How the work size scales a model's working memory, relative to the measured default.
+    var memoryFactor: Double {
+        switch tile {
+        case .auto: [1, 2.2, 2.2, 4.8][Self.autoTileScale - 1]
+        case .small: 0.6
+        case .large: 2.2
+        }
+    }
+
+    /// How the settings scale time per frame: full precision is slower, as are small tiles (more overlap).
+    var speedFactor: Double { (fullPrecision ? 1.6 : 1) * (tile == .small ? 1.15 : 1) }
 }
