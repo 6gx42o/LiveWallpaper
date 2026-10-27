@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             )
             window.title = "LiveWallpaper"
             window.toolbarStyle = .unified
+            window.titleVisibility = .hidden // the tabs show where you are
             let host = NSHostingController(rootView: WindowView(model: model))
             host.sizingOptions = .minSize // let the user resize; SwiftUI only enforces the minimum
             host.sceneBridgingOptions = [.title, .toolbars] // SwiftUI's title and toolbar drive the window's

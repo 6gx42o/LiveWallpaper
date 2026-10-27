@@ -40,7 +40,14 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    var tab: Tab = .wallpapers { didSet { objectWillChange.send() } }
+    var tab: Tab = .wallpapers {
+        didSet {
+            tabMovedForward = (Tab.allCases.firstIndex(of: tab) ?? 0) >= (Tab.allCases.firstIndex(of: oldValue) ?? 0)
+            objectWillChange.send()
+        }
+    }
+    /// Whether the last tab change moved right (pages slide in from that side).
+    private(set) var tabMovedForward = true
     let memory = MemoryCleaner()
     let studio = UpscaleStudio()
     /// A model being downloaded from Settings / the model list.

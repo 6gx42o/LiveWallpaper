@@ -1,22 +1,24 @@
 import AVFoundation
 import SwiftUI
 
-/// The app window: a sidebar of sections, each section's actions in the toolbar.
+/// The app window: sections as tabs in the toolbar (no sidebar), each section's actions beside them.
 struct WindowView: View {
     @ObservedObject var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
-        } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle(model.tab.rawValue)
-                .overlay { if model.isDropTargeted { DropOverlay(tab: model.tab).transition(dropTransition) } }
-                .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1), value: model.isDropTargeted)
+        ZStack {
+            page(model.tab)
+                .id(model.tab)
+                .transition(pageTransition)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 1), value: model.tab)
+        .overlay { if model.isDropTargeted { DropOverlay(tab: model.tab).transition(dropTransition) } }
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1), value: model.isDropTargeted)
+        .navigationTitle(model.tab.rawValue)
+        .toolbar { toolbar }
         .frame(minWidth: 860, minHeight: 580)
         .tint(model.prefs.accent.color)
         .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
@@ -37,46 +39,65 @@ struct WindowView: View {
         }
     }
 
+    /// Pages slide in from the side you're heading to and out the other way (a fade with Reduce Motion).
+    private var pageTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        let dx: CGFloat = model.tabMovedForward ? 36 : -36
+        // The old page leaves quickly so the two never read as one jumbled page mid-switch.
+        return .asymmetric(insertion: .opacity.combined(with: .offset(x: dx)),
+                           removal: .opacity.combined(with: .offset(x: -dx)).animation(.easeOut(duration: 0.12)))
+    }
+
     private var dropTransition: AnyTransition {
         reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98))
     }
 
-    @ViewBuilder private var detail: some View {
-        switch model.tab {
-        case .wallpapers:
-            ScrollView { WallpapersPane(model: model).padding(24) }
-                .toolbar { wallpaperToolbar }
-        case .upscale:
-            ScrollView { UpscaleView(studio: model.studio, model: model).padding(24) }
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { model.studio.choose() } label: { Label("Choose File", systemImage: "plus") }
-                            .help("Choose a video, GIF or image to upscale (⌘O)")
-                            .disabled(model.studio.isBusy)
-                    }
-                }
-        case .memory:
-            MemoryView(cleaner: model.memory, needed: memoryNeed).padding(24)
-        case .settings:
-            SettingsPane(model: model)
+    @ViewBuilder private func page(_ tab: AppModel.Tab) -> some View {
+        switch tab {
+        case .wallpapers: ScrollView { WallpapersPane(model: model).padding(24) }
+        case .upscale: ScrollView { UpscaleView(studio: model.studio, model: model).padding(24) }
+        case .memory: MemoryView(cleaner: model.memory, needed: memoryNeed).padding(24)
+        case .settings: SettingsPane(model: model)
         }
     }
 
-    @ToolbarContentBuilder private var wallpaperToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
             Button { model.gate.userPaused.toggle() } label: {
                 Label(model.gate.userPaused ? "Resume" : "Pause", systemImage: model.gate.userPaused ? "play.fill" : "pause.fill")
             }
             .disabled(model.current == nil || model.isCurrentBroken)
             .help(model.gate.userPaused ? "Resume the wallpaper (⌥⌘P)" : "Pause the wallpaper (⌥⌘P)")
+            let status = model.status
+            HStack(spacing: 5) {
+                Circle().fill(status.color).frame(width: 7, height: 7)
+                Text(status.text).lineLimit(1)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize()
+            .padding(.trailing, 6)
+            .help(status.text)
+            .accessibilityIdentifier("status")
+        }
+        ToolbarItem(placement: .principal) {
+            TabSwitcher(model: model)
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            Button { model.addFromYouTube() } label: { Label("YouTube", systemImage: "play.rectangle") }
-                .help("Add a wallpaper from a YouTube link (⌘L)")
-            Button { model.startScan() } label: { Label("Find Videos", systemImage: "magnifyingglass") }
-                .help("Find videos on this Mac that could be wallpapers (⇧⌘F)")
-            Button { model.addVideos() } label: { Label("Add Video", systemImage: "plus") }
-                .help("Add a video or GIF (⌘O)")
+            switch model.tab {
+            case .wallpapers:
+                Button { model.addFromYouTube() } label: { Label("YouTube", systemImage: "play.rectangle") }
+                    .help("Add a wallpaper from a YouTube link (⌘L)")
+                Button { model.startScan() } label: { Label("Find Videos", systemImage: "magnifyingglass") }
+                    .help("Find videos on this Mac that could be wallpapers (⇧⌘F)")
+                Button { model.addVideos() } label: { Label("Add Video", systemImage: "plus") }
+                    .help("Add a video or GIF (⌘O)")
+            case .upscale:
+                Button { model.studio.choose() } label: { Label("Choose File", systemImage: "plus") }
+                    .help("Choose a video, GIF or image to upscale (⌘O)")
+                    .disabled(model.studio.isBusy)
+            case .memory, .settings:
+                EmptyView()
+            }
         }
     }
 
@@ -89,45 +110,55 @@ struct WindowView: View {
     }
 }
 
-// MARK: - Sidebar
+// MARK: - Tabs
 
-private struct Sidebar: View {
+/// The sections as a compact segmented switcher; a pill glides to the chosen tab.
+private struct TabSwitcher: View {
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Wider when the ⌘ hints are shown so labels never crowd.
+    private var tabWidth: CGFloat { model.prefs.showShortcutHints ? 132 : 112 }
 
     var body: some View {
-        List(selection: Binding<AppModel.Tab?>(get: { model.tab }, set: { if let tab = $0 { model.tab = tab } })) {
-            Section {
-                ForEach([AppModel.Tab.wallpapers, .upscale, .memory], id: \.self, content: row)
-            }
-            Section {
-                row(.settings)
+        let tabs = AppModel.Tab.allCases
+        let index = CGFloat(tabs.firstIndex(of: model.tab) ?? 0)
+        HStack(spacing: 0) {
+            ForEach(tabs, id: \.self) { tab in
+                let selected = tab == model.tab
+                Button { model.tab = tab } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: tab.symbol)
+                            .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(tab.rawValue)
+                        if model.prefs.showShortcutHints {
+                            Text(shortcut(tab)).font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .font(.callout.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .frame(width: tabWidth, height: 26)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("\(tab.rawValue) (\(shortcut(tab)))")
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            let status = model.status
-            HStack(spacing: 6) {
-                Circle().fill(status.color).frame(width: 7, height: 7)
-                Text(status.text).lineLimit(1).truncationMode(.tail)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            .accessibilityIdentifier("status")
+        .background(alignment: .leading) {
+            Capsule()
+                .fill(Color(nsColor: .controlColor))
+                .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+                .frame(width: tabWidth, height: 26)
+                .offset(x: index * tabWidth)
+                .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.32, dampingFraction: 1), value: model.tab)
         }
+        .padding(3)
+        .background(Capsule().fill(Color.primary.opacity(0.06)))
     }
 
-    private func row(_ tab: AppModel.Tab) -> some View {
-        HStack {
-            Label(tab.rawValue, systemImage: tab.symbol)
-            Spacer()
-            if model.prefs.showShortcutHints {
-                Text(tab == .settings ? "⌘," : "⌘\((AppModel.Tab.allCases.firstIndex(of: tab) ?? 0) + 1)")
-                    .font(.caption).foregroundStyle(.tertiary)
-            }
-        }
-        .tag(tab)
+    private func shortcut(_ tab: AppModel.Tab) -> String {
+        tab == .settings ? "⌘," : "⌘\((AppModel.Tab.allCases.firstIndex(of: tab) ?? 0) + 1)"
     }
 }
 
@@ -135,6 +166,7 @@ private struct Sidebar: View {
 
 private struct WallpapersPane: View {
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let lib = model.library
@@ -157,6 +189,7 @@ private struct WallpapersPane: View {
                             upscale: notice.upscale.map { url in { model.upscale(url); model.library.dismiss(notice) } },
                             dismiss: { model.library.dismiss(notice) }
                         )
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
             }
@@ -181,6 +214,9 @@ private struct WallpapersPane: View {
                 }
             }
         }
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1), value: lib.notices.map(\.id))
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1), value: lib.videos)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: model.current)
     }
 
     private func name(_ url: URL?) -> String? { url?.deletingPathExtension().lastPathComponent }
