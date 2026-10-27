@@ -48,6 +48,7 @@ enum ModelAdvisor {
         case .swinIRLarge, .swinIRLargeSmooth: (29.5, 3_400_000_000, 32)
         case .hat, .hatSharper: (26.9, 5_900_000_000, 48)
         case .swinIRLargeEnsemble: (59.0, 6_800_000_000, 96)
+        case .hatEnsemble: (53.8, 11_800_000_000, 128)
         case .appleSuperResolution, .basic: nil
         }
     }
@@ -64,6 +65,7 @@ enum ModelAdvisor {
         case .swinIRLarge, .swinIRLargeSmooth: 6
         case .hat, .hatSharper: 7
         case .swinIRLargeEnsemble: 8
+        case .hatEnsemble: 9
         }
     }
 
@@ -105,7 +107,7 @@ enum ModelAdvisor {
         case .swinIRLarge: "Slowest, sharpest"
         case .swinIRLargeSmooth: "Slowest"
         case .hat, .hatSharper: "Slowest, most detailed"
-        case .swinIRLargeEnsemble: "Biggest Macs only"
+        case .swinIRLargeEnsemble, .hatEnsemble: "Biggest Macs only"
         }
     }
 

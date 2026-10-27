@@ -11,7 +11,7 @@ enum Upscaler {
     /// Smallest to largest; `realESRGAN` (Medium) keeps its old name so saved settings carry over.
     enum Engine: String, CaseIterable {
         case basic, appleSuperResolution, realESRGANSmall, realESRGAN, realESRGANAnime, realESRGANLarge2x, realESRGANLarge,
-             realESRNetLarge, swinIRMedium2x, swinIRMedium, swinIRLarge, swinIRLargeSmooth, hat, hatSharper, swinIRLargeEnsemble
+             realESRNetLarge, swinIRMedium2x, swinIRMedium, swinIRLarge, swinIRLargeSmooth, hat, hatSharper, swinIRLargeEnsemble, hatEnsemble
 
         var title: String {
             switch self {
@@ -30,6 +30,7 @@ enum Upscaler {
             case .hat: "HAT 4×"
             case .hatSharper: "HAT 4× Sharper"
             case .swinIRLargeEnsemble: "SwinIR Large 4× Ensemble"
+            case .hatEnsemble: "HAT 4× Ensemble"
             }
         }
 
@@ -49,6 +50,7 @@ enum Upscaler {
             case .swinIRLarge: "SwinIR Large (28 million parameters, 142 MB) at 4×: the biggest and most detailed model here. Made for Max and Ultra chips with lots of GPU cores and memory."
             case .hat: "HAT (Hybrid Attention Transformer, 2023): 16×16 window attention plus a channel-attention branch and overlapping cross-attention, so it sees more of the picture than SwinIR. The strongest single model here for real-world video; needs a Max or Ultra chip with 48 GB or more."
             case .hatSharper: "HAT trained on sharpened targets: crisper, punchier detail at the cost of a little faithfulness. Same size and speed as HAT 4×."
+            case .hatEnsemble: "HAT, the strongest single model here, run twice on every frame — as is and mirrored — with the results averaged. The heaviest option in LiveWallpaper: the most stable, detailed results, for twice HAT's time and memory. Uses HAT's model file. For Macs with 128 GB or more."
             case .swinIRLargeEnsemble: "SwinIR Large, run twice on every frame — as is and mirrored — with the two results averaged (a \"self-ensemble\", the trick research papers use for their best scores). Steadier detail and fewer invented artefacts, for twice the time and memory. Uses SwinIR Large's model file. For Macs with 96 GB or more."
             case .swinIRLargeSmooth: "SwinIR Large trained for faithfulness instead of crispness: the same 142 MB transformer, inventing less detail — natural-looking skin, text and fine patterns on the biggest Macs."
             }
@@ -70,6 +72,7 @@ enum Upscaler {
             case .hat: RealESRGAN.hat
             case .hatSharper: RealESRGAN.hatSharper
             case .swinIRLargeEnsemble: RealESRGAN.swinLargeEnsemble
+            case .hatEnsemble: RealESRGAN.hatEnsemble
             case .appleSuperResolution, .basic: nil
             }
         }

@@ -117,6 +117,14 @@ enum RealESRGAN {
         downloadSize: 170_277_017, sha256: "5800b67136006eb8cab3b4ed7c8d73b6a195bb18e6cc709b674f9aa069c00271",
         architecture: .hat, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
 
+    /// HAT run twice per tile (as is and mirrored) and averaged: the heaviest option, for the biggest Macs.
+    /// Uses HAT's own weights file.
+    static let hatEnsemble: Model = {
+        var model = hat
+        model.passes = 2
+        return model
+    }()
+
     static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appending(path: "LiveWallpaper/Models", directoryHint: .isDirectory)
