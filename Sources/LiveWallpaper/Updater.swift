@@ -55,6 +55,8 @@ final class Updater: ObservableObject {
     }
 
     private func checkIfDue() {
+        // Manual: never check or install on our own (a check queued before switching is dropped too).
+        guard Prefs.value("autoCheckUpdates", true) else { return }
         if case .available(let release) = state { return installIfAllowed(release) }
         guard state != .checking, !isBusy else { return }
         let interval = Double(Prefs.value("updateIntervalHours", 24)) * 3600

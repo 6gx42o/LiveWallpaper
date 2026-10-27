@@ -52,7 +52,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - *Importing* — largest size to keep (display / 4K / 1080p), YouTube quality, upscale low-resolution videos automatically, import tips
   - *Upscaling* — resolution, upscaler, work (tile) size, full-precision maths, output quality, output folder
   - *Memory* — refresh rate; *Updates* — see below; and **Restore Defaults**
-- **Updates itself in place.** LiveWallpaper checks GitHub's latest release (daily or weekly, or **Check for Updates…**). A new version is downloaded, its checksum, bundle ID, version and code signature are verified, and it **replaces the app where it is** — same name, same folder — then reopens. Your settings, wallpapers, edits, models and login item stay; there's no second copy to delete. Turn off automatic installing to update with a click instead.
+- **Updates itself in place.** Choose **Automatically** (daily or weekly) or **Manually** (only when you click **Check Now** or **Check for Updates…**); LiveWallpaper checks GitHub's latest release. A new version is downloaded, its checksum, bundle ID, version and code signature are verified, and it **replaces the app where it is** — same name, same folder — then reopens. Your settings, wallpapers, edits, models and login item stay; there's no second copy to delete. Turn off automatic installing to update with a click instead.
 
 ## Why it's light on battery
 

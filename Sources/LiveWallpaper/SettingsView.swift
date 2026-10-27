@@ -239,30 +239,35 @@ struct SettingsPane: View {
 
     private var updates: some View {
         Section("Updates") {
+            Picker(selection: bind(\.autoCheckUpdates)) {
+                Text("Automatically").tag(true)
+                Text("Manually").tag(false)
+            } label: {
+                label("Check for updates", prefs.autoCheckUpdates ? "LiveWallpaper looks for new versions on its own." : "Only when you click Check Now (or LiveWallpaper › Check for Updates…).",
+                      info: "Automatically looks for a new release in the background on the schedule below. Manually never checks on its own — use Check Now here or Check for Updates… in the LiveWallpaper menu. Checking only contacts GitHub and sends nothing about you.")
+            }
+            .pickerStyle(.segmented)
             HStack(alignment: .firstTextBaseline) {
                 label("LiveWallpaper \(Updater.currentVersion)", updateStatus,
-                      info: "LiveWallpaper checks GitHub for new versions. Updates download, are verified, and replace this app in place — your settings, wallpapers and models stay, and there's no second copy to delete.")
+                      info: "Updates download, are verified, and replace this app in place — your settings, wallpapers and models stay, and there's no second copy to delete.")
                 Spacer()
                 updateAction
             }
             if case .downloading(let fraction) = updater.state {
                 ProgressView(value: fraction ?? 0).progressViewStyle(.linear)
             }
-            Toggle(isOn: bind(\.autoCheckUpdates)) {
-                label("Check for updates automatically", info: "Looks for a new release in the background on the schedule below. It only contacts GitHub and sends nothing about you.")
+            if prefs.autoCheckUpdates {
+                Picker(selection: bind(\.updateIntervalHours)) {
+                    Text("Daily").tag(24)
+                    Text("Weekly").tag(168)
+                } label: {
+                    label("How often", info: "How often the automatic check runs.")
+                }
+                Toggle(isOn: bind(\.autoInstallUpdates)) {
+                    label("Install updates automatically", "Waits until nothing is converting or upscaling.",
+                          info: "Downloads and installs new versions by itself, then reopens LiveWallpaper. It waits while you're converting, upscaling or editing. Turn it off to be asked first: the update shows here with an Install and Relaunch button.")
+                }
             }
-            Picker(selection: bind(\.updateIntervalHours)) {
-                Text("Daily").tag(24)
-                Text("Weekly").tag(168)
-            } label: {
-                label("How often", info: "How often the automatic check runs.")
-            }
-            .disabled(!prefs.autoCheckUpdates)
-            Toggle(isOn: bind(\.autoInstallUpdates)) {
-                label("Install updates automatically", "Waits until nothing is converting or upscaling.",
-                      info: "Downloads and installs new versions by itself, then reopens LiveWallpaper. It waits while you're converting, upscaling or editing. Turn it off to install with a click instead.")
-            }
-            .disabled(!prefs.autoCheckUpdates)
         }
     }
 
