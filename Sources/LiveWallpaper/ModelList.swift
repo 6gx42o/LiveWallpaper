@@ -8,13 +8,12 @@ enum ModelConsent {
     static func ask(for engine: Upscaler.Engine) -> Bool? {
         NSApp.activate()
         let alert = NSAlert()
-        switch engine {
-        case .realESRGAN:
-            alert.messageText = "Download the Real-ESRGAN model?"
-            alert.informativeText = "Upscaling uses the open-source Real-ESRGAN model (\(TransferProgress.size(RealESRGAN.downloadSize)), the official file from github.com/xinntao/Real-ESRGAN). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
-        default:
+        if let model = engine.esrgan {
+            alert.messageText = "Download \(engine.title)?"
+            alert.informativeText = "Upscaling uses the open-source \(engine.title) model (\(TransferProgress.size(model.downloadSize)), the official file from github.com/xinntao/Real-ESRGAN). It's saved in LiveWallpaper's own folder and you can delete it any time in Settings."
+        } else {
             alert.messageText = "Download Apple's upscaling model?"
-            alert.informativeText = "Apple Super Resolution needs a model (about \(TransferProgress.size(ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0))) that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose Real-ESRGAN for a model you can delete."
+            alert.informativeText = "Apple Super Resolution needs a model (about \(TransferProgress.size(ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0))) that macOS downloads once, from Apple. macOS manages it — apps can't delete it later. Choose a Real-ESRGAN model for one you can delete."
         }
         alert.addButton(withTitle: "Download & Upscale")
         alert.addButton(withTitle: "Use Basic Upscaling")
@@ -64,12 +63,14 @@ struct ModelList: View {
                         .onTapGesture { if availability.canRun { selection.wrappedValue = engine } }
                 }
                 Text(engine.title).fontWeight(.medium).lineLimit(1).fixedSize()
+                InfoButton(engine.summary)
                 if recommended { badge("Recommended", .green).fixedSize() }
+                badge(ModelAdvisor.speedLabel(engine), .secondary).fixedSize()
                 Spacer(minLength: 4)
                 actions(engine).fixedSize()
             }
             Text(statusText(engine)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("Uses about \(SystemInfo.bytes(ModelAdvisor.estimatedMemory(engine, input: input))) of RAM for \(inputLabel).")
+            Text("Uses about \(SystemInfo.bytes(ModelAdvisor.estimatedMemory(engine, input: input))) of RAM for \(inputLabel)" + speedText(engine) + ".")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             switch availability {
             case .ready:
@@ -101,29 +102,35 @@ struct ModelList: View {
     }
 
     private func statusText(_ engine: Upscaler.Engine) -> String {
+        let size = model.modelSizes[engine].map(TransferProgress.size)
         switch engine {
-        case .realESRGAN:
-            return model.realESRGANSize.map { "Model downloaded · \(TransferProgress.size($0)) · deletable" }
-                ?? "Model not downloaded · \(TransferProgress.size(RealESRGAN.downloadSize)) download"
         case .appleSuperResolution:
-            return model.appleModelSize.map { "Model downloaded · \(TransferProgress.size($0)) · managed by macOS (can't be deleted by apps)" }
+            return size.map { "Model downloaded · \($0) · managed by macOS (can't be deleted by apps)" }
                 ?? "Model not downloaded · about \(TransferProgress.size(ModelAdvisor.downloadSize(.appleSuperResolution) ?? 0)) download · managed by macOS"
         case .basic:
             return "No model needed"
+        default:
+            return size.map { "Model downloaded · \($0) · deletable" }
+                ?? "Model not downloaded · \(TransferProgress.size(ModelAdvisor.downloadSize(engine) ?? 0)) download"
         }
+    }
+
+    /// ", about 1.3 s per frame on this Mac" for GPU models.
+    private func speedText(_ engine: Upscaler.Engine) -> String {
+        guard let seconds = ModelAdvisor.secondsPerFrame(engine, input: input) else { return "" }
+        return seconds < 1
+            ? ", about \(Int((1 / seconds).rounded())) frames a second on this Mac"
+            : ", about \(String(format: "%.1f", seconds)) s per frame on this Mac"
     }
 
     @ViewBuilder private func actions(_ engine: Upscaler.Engine) -> some View {
         let downloading = model.modelDownload?.engine == engine
-        switch engine {
-        case .realESRGAN where model.realESRGANSize == nil, .appleSuperResolution where model.appleModelSize == nil:
+        if engine != .basic, model.modelSizes[engine] == nil {
             Button(downloading ? "Downloading…" : "Download") { model.downloadModel(engine) }
                 .controlSize(.small)
                 .disabled(downloading || model.modelDownload != nil || !ModelAdvisor.availability(engine, input: input).canRun)
-        case .realESRGAN:
-            Button("Delete…") { model.deleteRealESRGANModel() }.controlSize(.small)
-        default:
-            EmptyView()
+        } else if engine.esrgan != nil {
+            Button("Delete…") { model.deleteModel(engine) }.controlSize(.small)
         }
     }
 

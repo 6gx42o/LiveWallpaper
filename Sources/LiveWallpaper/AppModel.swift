@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import Combine
 import ImageIO
 import ServiceManagement
 import SwiftUI
@@ -11,6 +12,14 @@ import os
 final class AppModel: ObservableObject {
     let gate = PlaybackGate()
     let library = Library()
+    let prefs = Prefs.shared
+    let updater = Updater()
+    /// Called after settings change (the menu bar icon follows the setting).
+    var onPrefsChanged: (() -> Void)?
+    private var prefsObserver: AnyCancellable?
+    private var appliedDisplays: DisplayChoice?
+    private var appliedRotation: Int?
+    private var rotationTimer: Timer?
     var openWindow: (() -> Void)?
     /// True while files are being dragged over a drop area (highlights it).
     var isDropTargeted = false { didSet { objectWillChange.send() } }
@@ -43,10 +52,8 @@ final class AppModel: ObservableObject {
         get { ResolutionChoice.current }
         set { ResolutionChoice.current = newValue; objectWillChange.send() }
     }
-    /// Size of the downloaded Real-ESRGAN model; nil when it isn't downloaded.
-    private(set) var realESRGANSize: Int64? = RealESRGAN.sizeOnDisk { didSet { objectWillChange.send() } }
-    /// Size of Apple's (macOS-managed) model; nil when macOS hasn't downloaded it.
-    private(set) var appleModelSize: Int64? = UpscalerModel.sizeOnDisk() { didSet { objectWillChange.send() } }
+    /// Size on disk of each downloaded model (Real-ESRGAN sizes and Apple's macOS-managed one).
+    private(set) var modelSizes: [Upscaler.Engine: Int64] = AppModel.measureModels() { didSet { objectWillChange.send() } }
     /// Setting: which upscaler to use.
     var upscaler: Upscaler.Engine {
         get { Upscaler.Engine.current }
@@ -85,10 +92,7 @@ final class AppModel: ObservableObject {
             windows.forEach { $0.load(nil) }
             loadCurrent()
         }
-        studio.onFinished = { [unowned self] method in
-            refreshModelSizes()
-            if method == .realESRGAN, asksToDeleteModel, realESRGANSize != nil { askToKeepModel() }
-        }
+        studio.onFinished = { [unowned self] method in modelUsed(method) }
         library.onChange = { [unowned self] in
             // New video info (size, duration) or a broken wallpaper changes what should be playing.
             loadCurrent()
@@ -98,14 +102,25 @@ final class AppModel: ObservableObject {
         library.onUpscaled = { [unowned self] original, upscaled, method in
             if current == original { current = upscaled }
             if lockScreen == original { setLockScreen(upscaled) }
-            refreshModelSizes()
-            if method == .realESRGAN, asksToDeleteModel, realESRGANSize != nil { askToKeepModel() }
+            modelUsed(method)
         }
 
         let defaults = UserDefaults.standard
         current = library.videos.first { $0.lastPathComponent == defaults.string(forKey: "wallpaper") }
         lockScreen = library.videos.first { $0.lastPathComponent == defaults.string(forKey: "lockWallpaper") }
+        if let from = defaults.string(forKey: "updatedFrom") {
+            defaults.removeObject(forKey: "updatedFrom")
+            library.post(.init(kind: .info, title: "Updated to LiveWallpaper \(Updater.currentVersion)",
+                               reason: "Updated from version \(from). Your settings, wallpapers and models were kept."))
+        }
+        appliedDisplays = prefs.displays
         buildWindows()
+        prefsObserver = prefs.objectWillChange.receive(on: RunLoop.main).sink { [unowned self] _ in applyPrefs() }
+        updater.onChange = { [unowned self] in objectWillChange.send() }
+        updater.canInstallNow = { [unowned self] in
+            library.converting == nil && !studio.isBusy && editor == nil && scanner == nil && modelDownload == nil
+        }
+        applyPrefs()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [unowned self] _ in
             MainActor.assumeIsolated { buildWindows() }
         }
@@ -175,6 +190,19 @@ final class AppModel: ObservableObject {
     }
 
     func remove(_ url: URL) {
+        if prefs.confirmRemove {
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.messageText = "Move “\(url.deletingPathExtension().lastPathComponent)” to the Trash?"
+            alert.informativeText = "It's removed from your library. You can put it back from the Trash."
+            alert.addButton(withTitle: "Move to Trash")
+            alert.addButton(withTitle: "Cancel")
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Don't ask again"
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+            if alert.suppressionButton?.state == .on { prefs.confirmRemove = false }
+        }
         if url == current { current = nil }
         if url == lockScreen { setLockScreen(nil) }
         if editor?.url == url { closeEditor(save: false) }
@@ -233,23 +261,20 @@ final class AppModel: ObservableObject {
     /// Downloads a model now (the Download button), showing size, time left and a progress bar.
     func downloadModel(_ engine: Upscaler.Engine) {
         guard modelDownload == nil, engine != .basic else { return }
-        let title = engine == .realESRGAN ? "Downloading the Real-ESRGAN model" : "Downloading Apple's upscaling model"
-        modelDownload = (engine, TransferProgress(title: title, totalBytes: ModelAdvisor.downloadSize(engine)))
+        modelDownload = (engine, TransferProgress(title: "Downloading \(engine.title)", totalBytes: ModelAdvisor.downloadSize(engine)))
         modelDownloadTask = Task {
             do {
-                switch engine {
-                case .realESRGAN:
-                    try await RealESRGAN.download { received, total in
+                if let model = engine.esrgan {
+                    try await RealESRGAN.download(model) { received, total in
                         Task { @MainActor in self.updateModelDownload(Double(received) / Double(total), received, total) }
                     }
-                case .appleSuperResolution:
+                } else {
                     guard #available(macOS 26.0, *) else { throw RealESRGAN.failure("Apple Super Resolution needs macOS 26 or later.") }
                     try await Upscaler.downloadAppleModel { fraction, received, total in self.updateModelDownload(fraction, received, total) }
-                case .basic: break
                 }
-                library.post(.init(kind: .info, title: "Downloaded the \(engine.title) model", reason: "It's ready — upscaling won't need to download anything."))
+                library.post(.init(kind: .info, title: "Downloaded \(engine.title)", reason: "It's ready — upscaling with it won't need to download anything."))
             } catch {
-                library.post(.init(title: "Couldn't download the \(engine.title) model",
+                library.post(.init(title: "Couldn't download \(engine.title)",
                                    reason: Task.isCancelled ? "Cancelled." : "Check your internet connection and try again.",
                                    details: error.localizedDescription))
             }
@@ -265,48 +290,58 @@ final class AppModel: ObservableObject {
 
     func cancelModelDownload() { modelDownloadTask?.cancel() }
 
-    func refreshModelSizes() {
-        realESRGANSize = RealESRGAN.sizeOnDisk
-        appleModelSize = UpscalerModel.sizeOnDisk()
+    private static func measureModels() -> [Upscaler.Engine: Int64] {
+        var sizes: [Upscaler.Engine: Int64] = [:]
+        for engine in Upscaler.Engine.allCases {
+            sizes[engine] = engine.esrgan.map(\.sizeOnDisk) ?? (engine == .appleSuperResolution ? UpscalerModel.sizeOnDisk() : nil)
+        }
+        return sizes
     }
 
-    /// After a Real-ESRGAN upscale: keep the model for next time, or delete it to free space.
-    private func askToKeepModel() {
+    func refreshModelSizes() { modelSizes = Self.measureModels() }
+
+    /// After an upscale: refresh sizes, and offer to delete a Real-ESRGAN model to free space.
+    private func modelUsed(_ method: Upscaler.Method) {
+        refreshModelSizes()
+        if case .realESRGAN(let engine) = method, asksToDeleteModel, modelSizes[engine] != nil { askToKeepModel(engine) }
+    }
+
+    private func askToKeepModel(_ engine: Upscaler.Engine) {
         NSApp.activate()
         let alert = NSAlert()
-        alert.messageText = "Keep the upscaling model?"
-        alert.informativeText = "Upscaling used the Real-ESRGAN model (\(realESRGANSize.map(UpscalerModel.sizeText) ?? "on disk")). Keep it to upscale again without downloading, or delete it to free up space — it downloads again only if you upscale later."
+        alert.messageText = "Keep the \(engine.title) model?"
+        alert.informativeText = "Upscaling used it (\(modelSizes[engine].map(UpscalerModel.sizeText) ?? "on disk")). Keep it to upscale again without downloading, or delete it to free up space — it downloads again only if you upscale with it later."
         alert.addButton(withTitle: "Keep")
         alert.addButton(withTitle: "Delete Model")
         alert.showsSuppressionButton = true
         alert.suppressionButton?.title = "Always keep, don't ask again"
         let response = alert.runModal()
         if alert.suppressionButton?.state == .on { asksToDeleteModel = false }
-        if response == .alertSecondButtonReturn { deleteRealESRGANModel(confirmed: true) }
+        if response == .alertSecondButtonReturn { deleteModel(engine, confirmed: true) }
     }
 
-    /// Deletes the downloaded Real-ESRGAN model (asks to confirm unless already confirmed).
-    func deleteRealESRGANModel(confirmed: Bool = false) {
-        guard let size = RealESRGAN.sizeOnDisk else { refreshModelSizes(); return }
+    /// Deletes a downloaded Real-ESRGAN model (asks to confirm unless already confirmed).
+    func deleteModel(_ engine: Upscaler.Engine, confirmed: Bool = false) {
+        guard let model = engine.esrgan, let size = model.sizeOnDisk else { refreshModelSizes(); return }
         if !confirmed {
             NSApp.activate()
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Delete the Real-ESRGAN model?"
-            alert.informativeText = "This frees \(UpscalerModel.sizeText(size)). Your upscaled videos stay. The model downloads again (after asking) only if you upscale later."
+            alert.messageText = "Delete the \(engine.title) model?"
+            alert.informativeText = "This frees \(UpscalerModel.sizeText(size)). Your upscaled videos stay. The model downloads again (after asking) only if you upscale with it later."
             alert.addButton(withTitle: "Delete")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         // Another delete may have finished while the dialog was open.
-        guard RealESRGAN.isDownloaded else { refreshModelSizes(); return }
+        guard model.isDownloaded else { refreshModelSizes(); return }
         do {
-            try RealESRGAN.delete()
-            log.notice("deleted Real-ESRGAN model (\(size) bytes)")
-            library.post(.init(kind: .info, title: "Deleted the upscaling model",
-                               reason: "Freed \(UpscalerModel.sizeText(size)). It downloads again only if you upscale."))
+            try RealESRGAN.delete(model)
+            log.notice("deleted \(model.file, privacy: .public) (\(size) bytes)")
+            library.post(.init(kind: .info, title: "Deleted \(engine.title)",
+                               reason: "Freed \(UpscalerModel.sizeText(size)). It downloads again only if you upscale with it."))
         } catch {
-            library.post(.init(title: "Couldn't delete the upscaling model", reason: "The model is still on your Mac.",
+            library.post(.init(title: "Couldn't delete \(engine.title)", reason: "The model is still on your Mac.",
                                details: error.localizedDescription))
         }
         refreshModelSizes()
@@ -428,6 +463,45 @@ final class AppModel: ObservableObject {
 
     var launchAtLoginNeedsApproval: Bool { SMAppService.mainApp.status == .requiresApproval }
 
+    // MARK: Settings
+
+    /// Applies settings that affect playback and appearance. Runs after every settings change.
+    private func applyPrefs() {
+        NSApp.appearance = prefs.theme.appearance
+        windows.forEach { $0.dimming = prefs.dimming }
+        if appliedDisplays != prefs.displays {
+            appliedDisplays = prefs.displays
+            buildWindows()
+        }
+        gate.updateBattery()
+        if appliedRotation != prefs.rotationMinutes {
+            appliedRotation = prefs.rotationMinutes
+            rotationTimer?.invalidate()
+            rotationTimer = nil
+            if prefs.rotationMinutes > 0 {
+                rotationTimer = Timer.scheduledTimer(withTimeInterval: Double(prefs.rotationMinutes) * 60, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.nextWallpaper() }
+                }
+            }
+        }
+        updater.applySchedule()
+        onPrefsChanged?()
+        objectWillChange.send()
+    }
+
+    /// Switches the home screen to the next (or a random) wallpaper in the library.
+    func nextWallpaper() {
+        let candidates = library.videos.filter { library.broken[$0] == nil }
+        guard candidates.count > 1 else { return }
+        switch prefs.rotationOrder {
+        case .inOrder:
+            let index = current.flatMap(candidates.firstIndex(of:)) ?? -1
+            current = candidates[(index + 1) % candidates.count]
+        case .shuffle:
+            current = candidates.filter { $0 != current }.randomElement()
+        }
+    }
+
     private func loadCurrent() {
         let url = isCurrentBroken ? nil : current
         let info = url.flatMap { library.infos[$0] }
@@ -438,9 +512,12 @@ final class AppModel: ObservableObject {
 
     private func buildWindows() {
         windows.forEach { $0.load(nil); $0.close() }
-        windows = NSScreen.screens.map(WallpaperWindow.init)
+        // The first screen is the one with the menu bar.
+        let screens = prefs.displays == .main ? Array(NSScreen.screens.prefix(1)) : NSScreen.screens
+        windows = screens.map(WallpaperWindow.init)
         for w in windows {
             w.onFailure = { [unowned self] url in library.markBroken(url) }
+            w.dimming = prefs.dimming
         }
         gate.windows = windows
         loadCurrent()

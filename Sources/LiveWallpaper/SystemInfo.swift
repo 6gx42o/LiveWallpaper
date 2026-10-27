@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import IOKit
 
 /// What this Mac has: chip, memory, and each display's native panel resolution.
 enum SystemInfo {
@@ -11,6 +12,14 @@ enum SystemInfo {
         return sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 && value == 1
     }()
     static let totalMemory = Int64(ProcessInfo.processInfo.physicalMemory)
+    /// GPU cores on Apple silicon (e.g. 10 on an M5, 40 on an M4 Max); nil when macOS doesn't say.
+    static let gpuCores: Int? = {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        return IORegistryEntryCreateCFProperty(service, "gpu-core-count" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? Int
+    }()
 
     /// Memory that can be used right now without swapping: free + inactive + purgeable pages.
     static func availableMemory() -> Int64 {

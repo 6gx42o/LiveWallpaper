@@ -4,50 +4,84 @@ import Foundation
 import Metal
 import MetalPerformanceShadersGraph
 
-/// Real-ESRGAN (BSD-3, © Xintao Wang): the compact video model `realesr-general-x4v3`, run on the GPU with
-/// Metal Performance Shaders Graph. Only the official weights file is downloaded (never code), on request,
-/// into LiveWallpaper's own folder — so it can be deleted any time.
+/// Real-ESRGAN (BSD-3, © Xintao Wang) in four sizes, run on the GPU with Metal Performance Shaders Graph.
+/// Only the official weights files are downloaded (never code), on request, into LiveWallpaper's own
+/// folder — so they can be deleted any time.
 enum RealESRGAN {
-    static let name = "Real-ESRGAN"
-    static let downloadURL = URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth")!
-    static let downloadSize: Int64 = 4_885_111
-    /// Pinned so a tampered or truncated download is rejected.
-    private static let sha256 = "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292"
+    /// One downloadable network.
+    struct Model: Hashable, Sendable {
+        enum Architecture: Hashable, Sendable { case compact, rrdb }
+        let file: String
+        let url: URL
+        let downloadSize: Int64
+        /// Pinned so a tampered or truncated download is rejected.
+        let sha256: String
+        let architecture: Architecture
+        /// How much the network enlarges each side.
+        let scale: Int
+        /// Largest source it takes (longest side × shortest side).
+        let maxInput: CGSize
 
-    static let fileURL: URL = {
+        var fileURL: URL { RealESRGAN.modelsDir.appending(path: file) }
+        var isDownloaded: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
+        var sizeOnDisk: Int64? {
+            (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value
+        }
+    }
+
+    /// 16-layer compact network trained for animation; the fastest and lightest.
+    static let small = Model(
+        file: "realesr-animevideov3.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth")!,
+        downloadSize: 2_504_012, sha256: "b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d",
+        architecture: .compact, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// 32-layer compact network for real-world video.
+    static let medium = Model(
+        file: "realesr-general-x4v3.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth")!,
+        downloadSize: 4_885_111, sha256: "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292",
+        architecture: .compact, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// The full 23-block RRDB network at 2×: best detail for videos that are only a little too small.
+    static let large2x = Model(
+        file: "RealESRGAN_x2plus.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth")!,
+        downloadSize: 67_061_725, sha256: "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb",
+        architecture: .rrdb, scale: 2, maxInput: CGSize(width: 2560, height: 1600))
+    /// The full 23-block RRDB network at 4×: the sharpest, and by far the slowest.
+    static let large = Model(
+        file: "RealESRGAN_x4plus.pth",
+        url: URL(string: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth")!,
+        downloadSize: 67_040_989, sha256: "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+        architecture: .rrdb, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+
+    static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appending(path: "LiveWallpaper/Models/realesr-general-x4v3.pth")
+        return support.appending(path: "LiveWallpaper/Models", directoryHint: .isDirectory)
     }()
 
-    static var isDownloaded: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
-
-    static var sizeOnDisk: Int64? {
-        (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value
-    }
-
-    /// Downloads and verifies the weights. `progress` gets (bytes received, total bytes).
-    static func download(progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(from: downloadURL)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw failure("The download server answered with an error.") }
-        let total = response.expectedContentLength > 0 ? response.expectedContentLength : downloadSize
-        var data = Data()
-        data.reserveCapacity(Int(total))
-        progress(0, total)
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            data.append(byte)
-            if data.count % 65_536 == 0 { progress(Int64(data.count), total) }
+    /// Downloads and verifies a model's weights. `progress` gets (bytes received, total bytes).
+    static func download(_ model: Model, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        let file = try await WebImport.download(model.url) { received, total in progress(received, total ?? model.downloadSize) }
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        guard try sha256(of: file) == model.sha256 else {
+            throw failure("The downloaded model didn't match the official file, so it wasn't used.")
         }
-        progress(Int64(data.count), total)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard digest == sha256 else { throw failure("The downloaded model didn't match the official file, so it wasn't used.") }
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: fileURL, options: .atomic)
+        try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: model.fileURL)
+        try FileManager.default.moveItem(at: file, to: model.fileURL)
     }
 
-    static func delete() throws {
-        guard isDownloaded else { return }
-        try FileManager.default.removeItem(at: fileURL)
+    static func delete(_ model: Model) throws {
+        guard model.isDownloaded else { return }
+        try FileManager.default.removeItem(at: model.fileURL)
+    }
+
+    static func sha256(of file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func failure(_ text: String) -> Error {
@@ -56,122 +90,237 @@ enum RealESRGAN {
 
     // MARK: Weights
 
-    /// Layer `i` of SRVGGNetCompact: conv weight/bias, then PReLU slope (absent for the last conv).
-    struct Layer { let weight: [Float]; let outChannels: Int; let inChannels: Int; let bias: [Float]; let slope: [Float]? }
+    /// Every named tensor in a downloaded model, as float32 values with their shape.
+    static func loadWeights(_ model: Model) throws -> [String: (shape: [Int], values: [Float])] {
+        let archive = try StoredZip(url: model.fileURL)
+        guard let pickle = archive.entry(suffix: "/data.pkl") else { throw incomplete }
+        var weights: [String: (shape: [Int], values: [Float])] = [:]
+        for (name, tensor) in try TorchPickle.tensors(pickle) {
+            let count = tensor.shape.reduce(1, *)
+            guard let data = archive.entry(suffix: "/data/\(tensor.storage)"),
+                  data.count >= (tensor.offset + count) * 4 else { throw incomplete }
+            let values: [Float] = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)[tensor.offset..<(tensor.offset + count)]) }
+            weights[name] = (tensor.shape, values)
+        }
+        return weights
+    }
 
-    /// Reads the 34 conv + 33 PReLU tensors. The file is hash-verified, so tensors are taken in their
-    /// known storage order (conv w, conv b, prelu) and every size is still checked.
-    static func loadLayers() throws -> [Layer] {
-        let archive = try StoredZip(url: fileURL)
-        func floats(_ key: Int, count: Int) throws -> [Float] {
-            guard let data = archive.entry(suffix: "/data/\(key)"), data.count == count * 4 else {
-                throw failure("The model file is incomplete. Delete it in Settings and upscale again to re-download.")
-            }
-            return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-        }
-        var layers: [Layer] = []
-        var key = 0
-        for index in 0..<34 {
-            let (inC, outC) = index == 0 ? (3, 64) : index == 33 ? (64, 48) : (64, 64)
-            let weight = try floats(key, count: outC * inC * 9)
-            let bias = try floats(key + 1, count: outC)
-            let slope = index < 33 ? try floats(key + 2, count: outC) : nil
-            key += index < 33 ? 3 : 2
-            layers.append(Layer(weight: weight, outChannels: outC, inChannels: inC, bias: bias, slope: slope))
-        }
-        return layers
+    private static var incomplete: Error {
+        failure("The model file is incomplete. Delete it in Settings and upscale again to re-download.")
     }
 
     // MARK: Network
 
-    /// SRVGGNetCompact ×4: conv+PReLU stack → pixel shuffle, added to a nearest-neighbour upscale of the input.
+    /// Runs a model on BGRA frames, tile by tile so memory stays bounded whatever the frame size.
     final class Network {
-        let width: Int, height: Int
-        private let device: MTLDevice
+        let width: Int, height: Int, scale: Int
         private let queue: MTLCommandQueue
         private let graph: MPSGraph
         private let input: MPSGraphTensor
         private let output: MPSGraphTensor
         private let inputBuffer: MTLBuffer
+        /// Tile size fed to the network (whole frame when it fits) and the overlap kept on each side.
+        private let tileWidth: Int, tileHeight: Int, overlap: Int
+        private let dataType: MPSDataType
+        private var rgb: [Float16]
+        private var tileOut: [Float16]
 
-        init(layers: [Layer], width: Int, height: Int) throws {
-            guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
-                  let buffer = device.makeBuffer(length: width * height * 3 * 4, options: .storageModeShared)
+        /// `tile` is the largest tile side in source pixels; `fullPrecision` trades speed for float32 maths.
+        init(model: Model, width: Int, height: Int, tile: Int, fullPrecision: Bool) throws {
+            guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue()
             else { throw RealESRGAN.failure("Metal isn't available on this Mac.") }
-            self.device = device
+            let weights = try RealESRGAN.loadWeights(model)
             self.queue = queue
             self.width = width
             self.height = height
+            scale = model.scale
+            // Even sides (the 2× model folds pixels in pairs); the whole frame if it fits in one tile.
+            tileWidth = min(width, tile + 32) & ~1
+            tileHeight = min(height, tile + 32) & ~1
+            overlap = min(16, min(tileWidth, tileHeight) / 4)
+            dataType = fullPrecision ? .float32 : .float16
+            // Inputs and outputs travel as half floats; the graph casts when computing in full precision.
+            guard let buffer = device.makeBuffer(length: tileWidth * tileHeight * 3 * 2, options: .storageModeShared)
+            else { throw RealESRGAN.failure("Out of GPU memory.") }
             inputBuffer = buffer
+            rgb = [Float16](repeating: 0, count: width * height * 3)
+            tileOut = [Float16](repeating: 0, count: tileWidth * tileHeight * scale * scale * 3)
+
             let graph = MPSGraph()
             self.graph = graph
-
-            let input = graph.placeholder(shape: [1, height, width, 3] as [NSNumber], dataType: .float32, name: "input")
-            let conv = MPSGraphConvolution2DOpDescriptor(
-                strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1, groups: 1,
-                paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1,
-                paddingStyle: .explicit, dataLayout: .NHWC, weightsLayout: .OIHW)!
-            func constant(_ values: [Float], _ shape: [Int]) -> MPSGraphTensor {
-                graph.constant(values.withUnsafeBufferPointer { Data(buffer: $0) }, shape: shape as [NSNumber], dataType: .float32)
-            }
-            var x = input
-            for layer in layers {
-                let weights = constant(layer.weight, [layer.outChannels, layer.inChannels, 3, 3])
-                x = graph.convolution2D(x, weights: weights, descriptor: conv, name: nil)
-                x = graph.addition(x, constant(layer.bias, [1, 1, 1, layer.outChannels]), name: nil)
-                if let slope = layer.slope {
-                    let zero = graph.constant(0, dataType: .float32)
-                    let positive = graph.maximum(x, zero, name: nil)
-                    let negative = graph.multiplication(graph.minimum(x, zero, name: nil), constant(slope, [1, 1, 1, layer.outChannels]), name: nil)
-                    x = graph.addition(positive, negative, name: nil)
-                }
-            }
-            let shuffled = graph.depth(toSpace2DTensor: x, widthAxis: 2, heightAxis: 1, depthAxis: 3, blockSize: 4, usePixelShuffleOrder: true, name: nil)
-            let base = graph.resize(input, size: [height * 4, width * 4] as [NSNumber], mode: .nearest,
-                                    centerResult: true, alignCorners: false, layout: .NHWC, name: nil)
-            self.input = input
-            output = graph.clamp(graph.addition(shuffled, base, name: nil),
-                                 min: graph.constant(0, dataType: .float32), max: graph.constant(1, dataType: .float32), name: nil)
+            input = graph.placeholder(shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float16, name: "input")
+            let builder = Builder(graph: graph, weights: weights, dataType: dataType)
+            let x = fullPrecision ? graph.cast(input, to: .float32, name: "in32") : input
+            var y = try model.architecture == .compact ? builder.compact(x) : builder.rrdb(x, scale: model.scale)
+            y = graph.clamp(y, min: builder.scalar(0), max: builder.scalar(1), name: nil)
+            output = fullPrecision ? graph.cast(y, to: .float16, name: "out16") : y
         }
 
-        /// Upscales one BGRA frame 4× into `destination` (BGRA, 4× the size).
+        /// Upscales one BGRA frame by `scale` into `destination` (BGRA, `scale`× the size).
         func upscale(_ frame: CVPixelBuffer, into destination: CVPixelBuffer) throws {
-            CVPixelBufferLockBaseAddress(frame, .readOnly)
-            defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
-            guard let src = CVPixelBufferGetBaseAddress(frame)?.assumingMemoryBound(to: UInt8.self) else { throw RealESRGAN.failure("Couldn't read a frame.") }
-            let srcStride = CVPixelBufferGetBytesPerRow(frame)
-            let rgb = inputBuffer.contents().assumingMemoryBound(to: Float.self)
-            for y in 0..<height {
-                let row = src + y * srcStride
-                for x in 0..<width {
-                    let o = (y * width + x) * 3
-                    rgb[o] = Float(row[x * 4 + 2]) / 255
-                    rgb[o + 1] = Float(row[x * 4 + 1]) / 255
-                    rgb[o + 2] = Float(row[x * 4]) / 255
-                }
-            }
-            let feed = MPSGraphTensorData(inputBuffer, shape: [1, height, width, 3] as [NSNumber], dataType: .float32)
-            let result = graph.run(with: queue, feeds: [input: feed], targetTensors: [output], targetOperations: nil)
-            guard let out = result[output] else { throw RealESRGAN.failure("The upscaler produced no output.") }
-
-            let outWidth = width * 4, outHeight = height * 4
-            var pixels = [Float](repeating: 0, count: outWidth * outHeight * 3)
-            pixels.withUnsafeMutableBytes { out.mpsndarray().readBytes($0.baseAddress!, strideBytes: nil) }
-
+            try readFrame(frame)
             CVPixelBufferLockBaseAddress(destination, [])
             defer { CVPixelBufferUnlockBaseAddress(destination, []) }
-            guard let dst = CVPixelBufferGetBaseAddress(destination)?.assumingMemoryBound(to: UInt8.self) else { throw RealESRGAN.failure("Out of memory.") }
+            guard let dst = CVPixelBufferGetBaseAddress(destination)?.assumingMemoryBound(to: UInt8.self) else {
+                throw RealESRGAN.failure("Out of memory.")
+            }
             let dstStride = CVPixelBufferGetBytesPerRow(destination)
-            for y in 0..<outHeight {
-                let row = dst + y * dstStride
-                for x in 0..<outWidth {
-                    let o = (y * outWidth + x) * 3
-                    row[x * 4] = UInt8(pixels[o + 2] * 255 + 0.5)
-                    row[x * 4 + 1] = UInt8(pixels[o + 1] * 255 + 0.5)
-                    row[x * 4 + 2] = UInt8(pixels[o] * 255 + 0.5)
-                    row[x * 4 + 3] = 255
+            for y0 in Self.starts(length: height, tile: tileHeight, overlap: overlap) {
+                for x0 in Self.starts(length: width, tile: tileWidth, overlap: overlap) {
+                    try run(x0: x0, y0: y0)
+                    // Keep the tile's centre; its overlap is only context (edges of the frame are kept).
+                    let left = x0 == 0 ? 0 : overlap, right = x0 + tileWidth == width ? 0 : overlap
+                    let top = y0 == 0 ? 0 : overlap, bottom = y0 + tileHeight == height ? 0 : overlap
+                    let outW = tileWidth * scale
+                    for ty in (top * scale)..<((tileHeight - bottom) * scale) {
+                        let row = dst + (y0 * scale + ty) * dstStride
+                        for tx in (left * scale)..<((tileWidth - right) * scale) {
+                            let o = (ty * outW + tx) * 3
+                            let p = (x0 * scale + tx) * 4
+                            row[p] = Self.byte(tileOut[o + 2])
+                            row[p + 1] = Self.byte(tileOut[o + 1])
+                            row[p + 2] = Self.byte(tileOut[o])
+                            row[p + 3] = 255
+                        }
+                    }
                 }
             }
+        }
+
+        /// Tile origins along one side: steps that overlap by `2 × overlap`, the last one flush with the end.
+        static func starts(length: Int, tile: Int, overlap: Int) -> [Int] {
+            guard length > tile else { return [0] }
+            let step = tile - 2 * overlap
+            return Array(stride(from: 0, to: length - tile, by: step)) + [length - tile]
+        }
+
+        private static func byte(_ value: Float16) -> UInt8 { UInt8(Float(value) * 255 + 0.5) }
+
+        private func readFrame(_ frame: CVPixelBuffer) throws {
+            CVPixelBufferLockBaseAddress(frame, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
+            guard let src = CVPixelBufferGetBaseAddress(frame)?.assumingMemoryBound(to: UInt8.self) else {
+                throw RealESRGAN.failure("Couldn't read a frame.")
+            }
+            let stride = CVPixelBufferGetBytesPerRow(frame)
+            for y in 0..<height {
+                let row = src + y * stride
+                for x in 0..<width {
+                    let o = (y * width + x) * 3
+                    rgb[o] = Float16(Float(row[x * 4 + 2]) / 255)
+                    rgb[o + 1] = Float16(Float(row[x * 4 + 1]) / 255)
+                    rgb[o + 2] = Float16(Float(row[x * 4]) / 255)
+                }
+            }
+        }
+
+        private func run(x0: Int, y0: Int) throws {
+            let tile = inputBuffer.contents().assumingMemoryBound(to: Float16.self)
+            rgb.withUnsafeBufferPointer { frame in
+                for y in 0..<tileHeight {
+                    (tile + y * tileWidth * 3).update(from: frame.baseAddress! + ((y0 + y) * width + x0) * 3, count: tileWidth * 3)
+                }
+            }
+            let feed = MPSGraphTensorData(inputBuffer, shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float16)
+            let result = graph.run(with: queue, feeds: [input: feed], targetTensors: [output], targetOperations: nil)
+            guard let out = result[output] else { throw RealESRGAN.failure("The upscaler produced no output.") }
+            tileOut.withUnsafeMutableBytes { out.mpsndarray().readBytes($0.baseAddress!, strideBytes: nil) }
+        }
+    }
+
+    /// Builds the two Real-ESRGAN architectures from their PyTorch weight names.
+    private struct Builder {
+        let graph: MPSGraph
+        let weights: [String: (shape: [Int], values: [Float])]
+        let dataType: MPSDataType
+        private let descriptor = MPSGraphConvolution2DOpDescriptor(
+            strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1, groups: 1,
+            paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1,
+            paddingStyle: .explicit, dataLayout: .NHWC, weightsLayout: .OIHW)!
+
+        init(graph: MPSGraph, weights: [String: (shape: [Int], values: [Float])], dataType: MPSDataType) {
+            self.graph = graph
+            self.weights = weights
+            self.dataType = dataType
+        }
+
+        func scalar(_ value: Double) -> MPSGraphTensor { graph.constant(value, dataType: dataType) }
+
+        private func constant(_ name: String, shape: [Int]? = nil) throws -> MPSGraphTensor {
+            guard let tensor = weights[name] else { throw RealESRGAN.incomplete }
+            let data = dataType == .float16
+                ? tensor.values.map(Float16.init).withUnsafeBufferPointer { Data(buffer: $0) }
+                : tensor.values.withUnsafeBufferPointer { Data(buffer: $0) }
+            return graph.constant(data, shape: (shape ?? tensor.shape) as [NSNumber], dataType: dataType)
+        }
+
+        /// 3×3 convolution (PyTorch `name.weight` / `name.bias`).
+        private func conv(_ x: MPSGraphTensor, _ name: String) throws -> MPSGraphTensor {
+            let y = graph.convolution2D(x, weights: try constant(name + ".weight"), descriptor: descriptor, name: nil)
+            let channels = weights[name + ".bias"]?.shape.first ?? 0
+            return graph.addition(y, try constant(name + ".bias", shape: [1, 1, 1, channels]), name: nil)
+        }
+
+        private func lrelu(_ x: MPSGraphTensor) -> MPSGraphTensor { graph.leakyReLU(with: x, alpha: 0.2, name: nil) }
+
+        private func up2(_ x: MPSGraphTensor) -> MPSGraphTensor {
+            let shape = x.shape!.map(\.intValue)
+            return graph.resize(x, size: [shape[1] * 2, shape[2] * 2] as [NSNumber], mode: .nearest,
+                                centerResult: true, alignCorners: false, layout: .NHWC, name: nil)
+        }
+
+        /// SRVGGNetCompact ×4: conv+PReLU stack → pixel shuffle, added to a nearest-neighbour upscale of the input.
+        func compact(_ input: MPSGraphTensor) throws -> MPSGraphTensor {
+            var x = input
+            var index = 0
+            while let tensor = weights["body.\(index).weight"] {
+                if tensor.shape.count == 4 {
+                    x = try conv(x, "body.\(index)")
+                } else {
+                    let slope = try constant("body.\(index).weight", shape: [1, 1, 1, tensor.shape[0]])
+                    let zero = scalar(0)
+                    x = graph.addition(graph.maximum(x, zero, name: nil),
+                                       graph.multiplication(graph.minimum(x, zero, name: nil), slope, name: nil), name: nil)
+                }
+                index += 1
+            }
+            guard index > 0 else { throw RealESRGAN.incomplete }
+            let shuffled = graph.depth(toSpace2DTensor: x, widthAxis: 2, heightAxis: 1, depthAxis: 3, blockSize: 4, usePixelShuffleOrder: true, name: nil)
+            return graph.addition(shuffled, up2(up2(input)), name: nil)
+        }
+
+        /// RRDBNet: 23 residual-in-residual dense blocks, then two 2× nearest upsamples with convs.
+        /// The 2× model first folds 2×2 pixels into channels so the same 4× tail gives 2× overall.
+        func rrdb(_ input: MPSGraphTensor, scale: Int) throws -> MPSGraphTensor {
+            var x = input
+            if scale == 2 {
+                x = graph.space(toDepth2DTensor: x, widthAxis: 2, heightAxis: 1, depthAxis: 3, blockSize: 2, usePixelShuffleOrder: true, name: nil)
+            }
+            let feat = try conv(x, "conv_first")
+            var body = feat
+            var block = 0
+            while weights["body.\(block).rdb1.conv1.weight"] != nil {
+                let start = body
+                for rdb in 1...3 { body = try dense(body, "body.\(block).rdb\(rdb)") }
+                body = graph.addition(graph.multiplication(body, scalar(0.2), name: nil), start, name: nil)
+                block += 1
+            }
+            guard block > 0 else { throw RealESRGAN.incomplete }
+            var y = graph.addition(feat, try conv(body, "conv_body"), name: nil)
+            y = lrelu(try conv(up2(y), "conv_up1"))
+            y = lrelu(try conv(up2(y), "conv_up2"))
+            return try conv(lrelu(try conv(y, "conv_hr")), "conv_last")
+        }
+
+        /// Residual dense block: five convs, each seeing everything before it.
+        private func dense(_ x: MPSGraphTensor, _ name: String) throws -> MPSGraphTensor {
+            var features = [x]
+            for i in 1...4 {
+                let joined = features.count == 1 ? x : graph.concatTensors(features, dimension: 3, name: nil)
+                features.append(lrelu(try conv(joined, "\(name).conv\(i)")))
+            }
+            let x5 = try conv(graph.concatTensors(features, dimension: 3, name: nil), "\(name).conv5")
+            return graph.addition(graph.multiplication(x5, scalar(0.2), name: nil), x, name: nil)
         }
     }
 }
@@ -186,18 +335,19 @@ private struct StoredZip {
         func u16(_ o: Int) -> Int { Int(data[o]) | Int(data[o + 1]) << 8 }
         func u32(_ o: Int) -> Int { u16(o) | u16(o + 2) << 16 }
         // End of central directory record, searched from the end.
-        guard let end = stride(from: data.count - 22, through: max(0, data.count - 65_557), by: -1)
+        guard data.count >= 22, let end = stride(from: data.count - 22, through: max(0, data.count - 65_557), by: -1)
             .first(where: { u32($0) == 0x0605_4b50 }) else { throw RealESRGAN.failure("The model file isn't a valid archive.") }
         var offset = u32(end + 16)
         for _ in 0..<u16(end + 10) {
-            guard u32(offset) == 0x0201_4b50 else { break }
+            guard offset + 46 <= data.count, u32(offset) == 0x0201_4b50 else { break }
             let method = u16(offset + 10), size = u32(offset + 20)
             let nameLength = u16(offset + 28), extraLength = u16(offset + 30), commentLength = u16(offset + 32)
             let local = u32(offset + 42)
+            guard offset + 46 + nameLength <= data.count else { break }
             let name = String(decoding: data[(offset + 46)..<(offset + 46 + nameLength)], as: UTF8.self)
-            if method == 0, u32(local) == 0x0403_4b50 {
+            if method == 0, local + 30 <= data.count, u32(local) == 0x0403_4b50 {
                 let start = local + 30 + u16(local + 26) + u16(local + 28)
-                entries[name] = start..<(start + size)
+                if start + size <= data.count { entries[name] = start..<(start + size) }
             }
             offset += 46 + nameLength + extraLength + commentLength
         }
@@ -205,5 +355,109 @@ private struct StoredZip {
 
     func entry(suffix: String) -> Data? {
         entries.first { $0.key.hasSuffix(suffix) }.map { data.subdata(in: $0.value) }
+    }
+}
+
+/// Reads the tensor index (name → storage, offset, shape) from PyTorch's `data.pkl`.
+/// Only the handful of pickle opcodes PyTorch uses for a state dict are understood; nothing is executed —
+/// the only "calls" recognised are rebuilding a tensor and creating an ordered dictionary.
+enum TorchPickle {
+    struct Tensor { let storage: String; let offset: Int; let shape: [Int] }
+
+    private final class Dict { var items: [(Value, Value)] = [] }
+    private enum Value {
+        case none, int(Int), string(String), tuple([Value]), dict(Dict), global(String), storage(String), tensor(Tensor), other
+    }
+
+    static func tensors(_ data: Data) throws -> [(String, Tensor)] {
+        let bytes = [UInt8](data)
+        var i = 0
+        var stack: [Value] = [], marks: [Int] = [], memo: [Int: Value] = [:]
+        func bad() -> Error { RealESRGAN.failure("The model file's index couldn't be read.") }
+        func read(_ n: Int) throws -> ArraySlice<UInt8> {
+            guard i + n <= bytes.count else { throw bad() }
+            defer { i += n }
+            return bytes[i..<(i + n)]
+        }
+        func uint(_ n: Int) throws -> Int { try read(n).reversed().reduce(0) { $0 << 8 | Int($1) } }
+        func pop() throws -> Value { guard let v = stack.popLast() else { throw bad() }; return v }
+        func popMark() throws -> [Value] {
+            guard let mark = marks.popLast(), mark <= stack.count else { throw bad() }
+            defer { stack.removeSubrange(mark...) }
+            return Array(stack[mark...])
+        }
+        func line() throws -> String {
+            guard let end = bytes[i...].firstIndex(of: 0x0a) else { throw bad() }
+            defer { i = end + 1 }
+            return String(decoding: bytes[i..<end], as: UTF8.self)
+        }
+        func setItems(_ pairs: [Value]) throws {
+            guard case .dict(let dict) = stack.last, pairs.count.isMultiple(of: 2) else { throw bad() }
+            for k in stride(from: 0, to: pairs.count, by: 2) { dict.items.append((pairs[k], pairs[k + 1])) }
+        }
+
+        loop: while i < bytes.count {
+            let op = bytes[i]
+            i += 1
+            switch op {
+            case 0x80: _ = try read(1) // PROTO
+            case 0x95: _ = try read(8) // FRAME
+            case 0x7d: stack.append(.dict(Dict())) // EMPTY_DICT
+            case 0x5d, 0x29: stack.append(op == 0x29 ? .tuple([]) : .other) // EMPTY_LIST, EMPTY_TUPLE
+            case 0x28: marks.append(stack.count) // MARK
+            case 0x58: stack.append(.string(String(decoding: try read(try uint(4)), as: UTF8.self))) // BINUNICODE
+            case 0x8c: stack.append(.string(String(decoding: try read(try uint(1)), as: UTF8.self))) // SHORT_BINUNICODE
+            case 0x63: stack.append(.global(try line() + " " + (try line()))) // GLOBAL
+            case 0x71: guard let top = stack.last else { throw bad() }; memo[try uint(1)] = top // BINPUT
+            case 0x72: guard let top = stack.last else { throw bad() }; memo[try uint(4)] = top // LONG_BINPUT
+            case 0x68: guard let v = memo[try uint(1)] else { throw bad() }; stack.append(v) // BINGET
+            case 0x6a: guard let v = memo[try uint(4)] else { throw bad() }; stack.append(v) // LONG_BINGET
+            case 0x4a: stack.append(.int(Int(Int32(truncatingIfNeeded: try uint(4))))) // BININT
+            case 0x4b: stack.append(.int(try uint(1))) // BININT1
+            case 0x4d: stack.append(.int(try uint(2))) // BININT2
+            case 0x74: stack.append(.tuple(try popMark())) // TUPLE
+            case 0x85, 0x86, 0x87: // TUPLE1-3
+                let n = Int(op - 0x84)
+                guard stack.count >= n else { throw bad() }
+                stack.append(.tuple(Array(stack.suffix(n))))
+                stack.removeSubrange((stack.count - n - 1)..<(stack.count - 1))
+            case 0x88, 0x89, 0x4e: stack.append(op == 0x4e ? .none : .other) // NEWTRUE, NEWFALSE, NONE
+            case 0x51: // BINPERSID: ('storage', type, key, location, size)
+                guard case .tuple(let id) = try pop(), id.count > 2, case .string(let key) = id[2] else { throw bad() }
+                stack.append(.storage(key))
+            case 0x52: // REDUCE
+                let args = try pop(), callable = try pop()
+                switch (callable, args) {
+                case (.global("torch._utils _rebuild_tensor_v2"), .tuple(let a)) where a.count >= 3:
+                    guard case .storage(let key) = a[0], case .int(let offset) = a[1], case .tuple(let dims) = a[2] else { throw bad() }
+                    let shape = try dims.map { dim -> Int in guard case .int(let n) = dim else { throw bad() }; return n }
+                    stack.append(.tensor(Tensor(storage: key, offset: offset, shape: shape)))
+                case (.global("collections OrderedDict"), _): stack.append(.dict(Dict()))
+                default: stack.append(.other)
+                }
+            case 0x62: _ = try pop() // BUILD (sets metadata we don't need)
+            case 0x73: let value = try pop(), key = try pop(); try setItems([key, value]) // SETITEM
+            case 0x75: try setItems(try popMark()) // SETITEMS
+            case 0x61: _ = try pop() // APPEND
+            case 0x65: _ = try popMark() // APPENDS
+            case 0x2e: break loop // STOP
+            default: throw bad()
+            }
+        }
+        // The weights are either the top-level dict or under "params_ema" / "params".
+        guard case .dict(let top) = stack.last else { throw bad() }
+        func tensors(in dict: Dict) -> [(String, Tensor)] {
+            dict.items.compactMap { key, value in
+                guard case .string(let name) = key, case .tensor(let tensor) = value else { return nil }
+                return (name, tensor)
+            }
+        }
+        for preferred in ["params_ema", "params"] {
+            if let (_, value) = top.items.first(where: { if case .string(preferred) = $0.0 { true } else { false } }),
+               case .dict(let inner) = value {
+                return tensors(in: inner)
+            }
+        }
+        return tensors(in: top)
     }
 }

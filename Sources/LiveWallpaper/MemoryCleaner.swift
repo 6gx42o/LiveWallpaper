@@ -27,11 +27,11 @@ final class MemoryCleaner: ObservableObject {
     var total: Int64 { SystemInfo.totalMemory }
     var used: Int64 { max(total - available, 0) }
 
-    /// Refreshes every 2 s while the Memory tab is visible.
+    /// Refreshes (every 2 s by default; see Settings) while the Memory section is visible.
     func start() {
         refresh()
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: Double(Prefs.value("memoryRefreshSeconds", 2)), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
     }
@@ -149,7 +149,10 @@ struct MemoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("\(SystemInfo.chip) · \(SystemInfo.bytes(cleaner.total)) RAM").font(.headline)
+                HStack(spacing: 4) {
+                    Text("\(SystemInfo.chip) · \(SystemInfo.bytes(cleaner.total)) RAM").font(.headline)
+                    InfoButton("Your Mac's memory right now. Upscaling with ML models needs a lot of free memory; if there isn't enough, macOS starts swapping to disk and everything slows down. Use this section to see what's using memory and free some up before upscaling.")
+                }
                 ProgressView(value: Double(cleaner.used), total: Double(cleaner.total))
                     .tint(pressureColor)
                 HStack {
@@ -161,6 +164,7 @@ struct MemoryView: View {
                 Label(cleaner.pressure >= 4 ? "Memory pressure: critical" : cleaner.pressure >= 2 ? "Memory pressure: high — macOS is compressing and swapping" : "Memory pressure: normal",
                       systemImage: "gauge.with.dots.needle.33percent")
                     .font(.caption).foregroundStyle(cleaner.pressure >= 2 ? .orange : .secondary)
+                    .help("Memory pressure is macOS's own measure of how hard it's working to find memory. Normal is fine; high means it's compressing and swapping.")
                 if cleaner.swapped > 0 {
                     Text("\(SystemInfo.bytes(cleaner.swapped)) swapped to disk").font(.caption).foregroundStyle(.secondary)
                 }
@@ -177,6 +181,7 @@ struct MemoryView: View {
 
             HStack {
                 Text("Apps using memory").font(.headline)
+                InfoButton("Open apps, biggest first, including their helper processes. Tick apps and Quit Selected to close them (each can still ask to save). Clean Memory clears macOS's file cache without closing anything; it asks for your password.")
                 Spacer()
                 Button("Clean Memory…") { cleaner.cleanCache() }
                     .help("Clears macOS's file cache from RAM (asks for your password). Doesn't close anything.")

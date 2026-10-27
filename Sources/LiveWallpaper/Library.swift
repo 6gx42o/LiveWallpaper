@@ -249,7 +249,8 @@ final class Library {
         setProgress("Downloading from YouTube", nil)
         let process = Process()
         currentProcess = process
-        let maxHeight = Int(max(Display.pixelSize.width, Display.pixelSize.height) >= 3000 ? 2160 : 1440)
+        let maxHeight = Prefs.shared.youTubeQuality.maxHeight
+            ?? Int(max(Display.pixelSize.width, Display.pixelSize.height) >= 3000 ? 2160 : 1440)
         currentTask = Task {
             do {
                 let file = try await WebImport.downloadYouTube(url, maxHeight: maxHeight, process: process) { title, received, total in
@@ -330,12 +331,21 @@ final class Library {
         let issues = info.issues(on: Display.pixelSize, includeSource: true)
         guard !issues.isEmpty else { return }
         let hasWarning = issues.contains { $0.severity == .warning }
+        guard hasWarning || Prefs.shared.showImportTips else { return }
+        let lowResolution = issues.contains { $0.isLowResolution && $0.severity == .warning }
+        // Settings › Upscale low-resolution imports: only when no download is needed (downloads always ask first).
+        if lowResolution, Prefs.shared.autoUpscale, !Upscaler.needsModelDownload(engine: .current, video: info.size) {
+            upscale(converted, allowModelDownload: false)
+            notices.append(Notice(kind: .info, title: "Upscaling “\(source.lastPathComponent)” automatically",
+                                  reason: issues.map { "• " + $0.text }.joined(separator: "\n")))
+            return
+        }
         notices.append(Notice(
             kind: hasWarning ? .warning : .info,
             title: hasWarning ? "“\(source.lastPathComponent)” may not look great" : "“\(source.lastPathComponent)” added — heads up",
             reason: issues.map { "• " + $0.text }.joined(separator: "\n"),
             details: "Source: \(info.resolutionText), \(Int(info.fps.rounded())) fps, \(String(format: "%.1f", info.bitrate / 1_000_000)) Mbps · Display: \(Int(Display.pixelSize.width))×\(Int(Display.pixelSize.height))",
-            upscale: issues.contains { $0.isLowResolution && $0.severity == .warning } ? converted : nil
+            upscale: lowResolution ? converted : nil
         ))
     }
 
@@ -389,8 +399,15 @@ final class Library {
         onChange?()
     }
 
-    /// Longest edge we keep: 4K, or the display if it's bigger. Anything larger can't be seen and costs battery.
-    private var maxEdge: CGFloat { max(3840, Display.pixelSize.width, Display.pixelSize.height) }
+    /// Longest edge we keep (Settings › Import size): by default 4K, or the display if it's bigger.
+    /// Anything larger can't be seen and costs battery.
+    private var maxEdge: CGFloat {
+        switch Prefs.shared.importLimit {
+        case .display: max(3840, Display.pixelSize.width, Display.pixelSize.height)
+        case .uhd: 3840
+        case .hd: 1920
+        }
+    }
 
     private func convert(_ src: URL, to dst: URL, name: String) async throws {
         let file = src.lastPathComponent
@@ -447,7 +464,8 @@ final class Library {
 
         // Keep the original resolution at the highest HEVC quality; only shrink sources larger than we can show.
         let natural = try await track.load(.naturalSize)
-        let preset = max(natural.width, natural.height) > maxEdge ? AVAssetExportPresetHEVC3840x2160 : AVAssetExportPresetHEVCHighestQuality
+        let preset = max(natural.width, natural.height) <= maxEdge ? AVAssetExportPresetHEVCHighestQuality
+            : maxEdge <= 1920 ? AVAssetExportPresetHEVC1920x1080 : AVAssetExportPresetHEVC3840x2160
         guard let session = AVAssetExportSession(asset: comp, presetName: preset) else {
             throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "HEVC export isn't available on this Mac."])
         }

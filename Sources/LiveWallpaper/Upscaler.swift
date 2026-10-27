@@ -8,14 +8,41 @@ import os
 /// can't run falls back to Lanczos and says why.
 enum Upscaler {
     /// The user's choice in Settings.
+    /// Smallest to largest model; `realESRGAN` keeps its old name so saved settings carry over.
     enum Engine: String, CaseIterable {
-        case realESRGAN, appleSuperResolution, basic
+        case realESRGANSmall, realESRGAN, realESRGANLarge2x, realESRGANLarge, appleSuperResolution, basic
 
         var title: String {
             switch self {
-            case .realESRGAN: "Real-ESRGAN"
+            case .realESRGANSmall: "Real-ESRGAN Small"
+            case .realESRGAN: "Real-ESRGAN Medium"
+            case .realESRGANLarge2x: "Real-ESRGAN Large 2×"
+            case .realESRGANLarge: "Real-ESRGAN Large 4×"
             case .appleSuperResolution: "Apple Super Resolution"
             case .basic: "Basic (no download)"
+            }
+        }
+
+        /// What it's good at, in a sentence (shown behind the ⓘ button).
+        var summary: String {
+            switch self {
+            case .realESRGANSmall: "The lightest Real-ESRGAN network (16 layers, 2.5 MB). Fastest of the ML upscalers and gentlest on older or 8 GB Macs. Trained on animation, so it's best for cartoons, anime, games and graphics."
+            case .realESRGAN: "The general-purpose Real-ESRGAN video network (32 layers, 4.9 MB). A good balance of sharpness and speed for real-world footage on most Apple silicon Macs."
+            case .realESRGANLarge2x: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 2×. Much more detail than Medium for videos that are only a little too small, like 1080p on a Retina display. Several times slower."
+            case .realESRGANLarge: "The full Real-ESRGAN network (23 dense blocks, 64 MB) at 4×. The sharpest results for very small videos, and by far the slowest — best on Pro, Max or Ultra chips with plenty of memory."
+            case .appleSuperResolution: "Apple's own video upscaler, built into macOS 26. Light on memory and keeps motion smooth between frames. macOS downloads and manages its model, so apps can't delete it."
+            case .basic: "Classic Lanczos resizing with a little sharpening. Needs no download and is instant, but can't add real detail."
+            }
+        }
+
+        /// The Real-ESRGAN network this engine runs, if it's one of them.
+        var esrgan: RealESRGAN.Model? {
+            switch self {
+            case .realESRGANSmall: RealESRGAN.small
+            case .realESRGAN: RealESRGAN.medium
+            case .realESRGANLarge2x: RealESRGAN.large2x
+            case .realESRGANLarge: RealESRGAN.large
+            case .appleSuperResolution, .basic: nil
             }
         }
 
@@ -26,11 +53,11 @@ enum Upscaler {
     }
 
     /// What actually did the upscaling.
-    enum Method {
-        case realESRGAN, superResolution, lanczos
+    enum Method: Equatable {
+        case realESRGAN(Engine), superResolution, lanczos
         var name: String {
             switch self {
-            case .realESRGAN: "Real-ESRGAN (on-device ML)"
+            case .realESRGAN(let engine): "\(engine.title) (on-device ML)"
             case .superResolution: "Apple Super Resolution (on-device ML)"
             case .lanczos: "Lanczos scaling"
             }
@@ -44,8 +71,6 @@ enum Upscaler {
     }
 
     private static let log = Logger(subsystem: "LiveWallpaper", category: "upscale")
-    /// Largest source either ML engine takes (they upscale 4× before fitting the display).
-    private static let maxMLInput = CGSize(width: 1920, height: 1080)
 
     /// Size that covers `display` with `video`'s aspect ratio: never smaller than the video, at most 4×, even dimensions.
     static func targetSize(for video: CGSize, display: CGSize) -> CGSize {
@@ -57,12 +82,16 @@ enum Upscaler {
 
     /// The method `engine` would use for a video of this size on this Mac.
     static func method(for engine: Engine, video: CGSize) -> Method {
-        let fits = max(video.width, video.height) <= maxMLInput.width && min(video.width, video.height) <= maxMLInput.height
+        if let model = engine.esrgan { return fits(video, model) ? .realESRGAN(engine) : .lanczos }
         switch engine {
-        case .realESRGAN: return fits ? .realESRGAN : .lanczos
         case .appleSuperResolution: return superResolutionSupported(for: video) ? .superResolution : .lanczos
-        case .basic: return .lanczos
+        default: return .lanczos
         }
+    }
+
+    /// Whether a Real-ESRGAN model takes a source this size.
+    static func fits(_ video: CGSize, _ model: RealESRGAN.Model) -> Bool {
+        max(video.width, video.height) <= model.maxInput.width && min(video.width, video.height) <= model.maxInput.height
     }
 
     /// Whether Apple's Super Resolution can handle this source size on this Mac.
@@ -74,7 +103,7 @@ enum Upscaler {
     /// Whether upscaling this video with `engine` needs a model download first.
     static func needsModelDownload(engine: Engine, video: CGSize) -> Bool {
         switch method(for: engine, video: video) {
-        case .realESRGAN: return !RealESRGAN.isDownloaded
+        case .realESRGAN(let engine): return engine.esrgan?.isDownloaded == false
         case .superResolution:
             guard #available(macOS 26.0, *), let config = configuration(for: video) else { return false }
             return config.configurationModelStatus != .ready
@@ -88,9 +117,9 @@ enum Upscaler {
         var reason: String?
         do {
             switch engine {
-            case .realESRGAN:
-                try await realESRGAN(src, to: dst, target: target, allowModelDownload: allowModelDownload, progress: progress)
-                return Result(method: .realESRGAN)
+            case .realESRGANSmall, .realESRGAN, .realESRGANLarge2x, .realESRGANLarge:
+                try await realESRGAN(src, to: dst, target: target, engine: engine, allowModelDownload: allowModelDownload, progress: progress)
+                return Result(method: .realESRGAN(engine))
             case .appleSuperResolution:
                 guard #available(macOS 26.0, *) else { throw failure("Apple Super Resolution needs macOS 26 or later.") }
                 try await superResolve(src, to: dst, target: target, allowModelDownload: allowModelDownload, progress: progress)
@@ -147,7 +176,7 @@ enum Upscaler {
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: Int(outSize.width),
             AVVideoHeightKey: Int(outSize.height),
-            AVVideoCompressionPropertiesKey: [AVVideoQualityKey: 0.85],
+            AVVideoCompressionPropertiesKey: [AVVideoQualityKey: UpscaleSettings.snapshot().quality],
         ])
         input.transform = transform
         input.expectsMediaDataInRealTime = false
@@ -191,27 +220,30 @@ enum Upscaler {
 
     // MARK: Real-ESRGAN
 
-    private static func realESRGAN(_ src: URL, to dst: URL, target: CGSize, allowModelDownload: Bool,
+    private static func realESRGAN(_ src: URL, to dst: URL, target: CGSize, engine: Engine, allowModelDownload: Bool,
                                    progress: @escaping @MainActor (String, Double?, Int64?, Int64?) -> Void) async throws {
+        guard let model = engine.esrgan else { return }
         let asset = AVURLAsset(url: src)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw failure("No video track found.") }
         let natural = try await track.load(.naturalSize)
-        guard method(for: .realESRGAN, video: natural) == .realESRGAN else {
-            throw failure("Real-ESRGAN handles videos up to 1920×1080; this one is \(Int(natural.width))×\(Int(natural.height)).")
+        guard fits(natural, model) else {
+            throw failure("\(engine.title) handles videos up to \(Int(model.maxInput.width))×\(Int(model.maxInput.height)); this one is \(Int(natural.width))×\(Int(natural.height)).")
         }
-        if !RealESRGAN.isDownloaded {
-            guard allowModelDownload else { throw failure("The Real-ESRGAN model isn't downloaded.") }
-            try await RealESRGAN.download { received, total in
-                Task { @MainActor in progress("Downloading the Real-ESRGAN model…", Double(received) / Double(total), received, total) }
+        if !model.isDownloaded {
+            guard allowModelDownload else { throw failure("The \(engine.title) model isn't downloaded.") }
+            try await RealESRGAN.download(model) { received, total in
+                Task { @MainActor in progress("Downloading the \(engine.title) model…", Double(received) / Double(total), received, total) }
             }
         }
-        let network = try RealESRGAN.Network(layers: try RealESRGAN.loadLayers(), width: Int(natural.width), height: Int(natural.height))
+        let settings = UpscaleSettings.snapshot()
+        let network = try RealESRGAN.Network(model: model, width: Int(natural.width), height: Int(natural.height),
+                                             tile: settings.tile(for: model), fullPrecision: settings.fullPrecision)
         var big: CVPixelBuffer?
-        CVPixelBufferCreate(nil, Int(natural.width) * 4, Int(natural.height) * 4, kCVPixelFormatType_32BGRA,
+        CVPixelBufferCreate(nil, Int(natural.width) * model.scale, Int(natural.height) * model.scale, kCVPixelFormatType_32BGRA,
                             [kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()] as CFDictionary, &big)
         guard let big else { throw failure("Out of memory while upscaling.") }
         try await transcode(asset, track: track, to: dst, target: target, readerFormat: kCVPixelFormatType_32BGRA,
-                            label: "Upscaling with Real-ESRGAN…", progress: progress) { frame, _ in
+                            label: "Upscaling with \(engine.title)…", progress: progress) { frame, _ in
             try network.upscale(frame, into: big)
             return CIImage(cvPixelBuffer: big)
         }

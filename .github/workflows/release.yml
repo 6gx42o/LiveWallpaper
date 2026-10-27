@@ -1,0 +1,33 @@
+# Every push to main that changes the app builds it and publishes a GitHub release.
+# Installed copies check the latest release and update themselves in place (Settings › Updates).
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ["Sources/**", "Resources/**", "Info.plist", "Package.swift", "build.sh"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: VERSION="1.${{ github.run_number }}" ./build.sh
+      - name: Package
+        run: ditto -c -k --keepParent LiveWallpaper.app LiveWallpaper.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.${{ github.run_number }}" LiveWallpaper.zip \
+            --title "LiveWallpaper 1.${{ github.run_number }}" \
+            --notes "$(git log -1 --pretty=%B)"

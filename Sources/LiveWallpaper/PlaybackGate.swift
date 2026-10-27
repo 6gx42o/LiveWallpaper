@@ -1,4 +1,6 @@
 import AppKit
+import IOKit.ps
+import notify
 import os
 
 /// Collects every "nobody can see the wallpaper" signal and pauses players accordingly.
@@ -8,6 +10,8 @@ final class PlaybackGate {
     enum Reason: String, CaseIterable {
         case user = "Paused"
         case lowPower = "Low Power Mode"
+        case onBattery = "On battery"
+        case lowBattery = "Battery low"
         case displaySleep = "Display asleep"
         case systemSleep = "System asleep"
         case locked = "Screen locked"
@@ -19,6 +23,7 @@ final class PlaybackGate {
     private(set) var reasons: Set<Reason> = []
     private var coveredDisplays: Set<CGDirectDisplayID> = []
     private var tokens: [NSObjectProtocol] = []
+    private var powerTokens: [Int32] = []
     private let log = Logger(subsystem: "LiveWallpaper", category: "gate")
 
     init() {
@@ -31,6 +36,15 @@ final class PlaybackGate {
 
         updateLowPower()
         observe(.default, .NSProcessInfoPowerStateDidChange) { [unowned self] _ in updateLowPower() }
+        // Power source and battery level changes are pushed by macOS (no polling).
+        for name in [kIOPSNotifyAnyPowerSource] {
+            var token: Int32 = 0
+            notify_register_dispatch(name, &token, .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateBattery() }
+            }
+            powerTokens.append(token)
+        }
+        updateBattery()
 
         // Covered/full-screen detection. (NSWindow occlusion was tried: for desktop-level windows it gets
         // stuck on "hidden" after leaving a full-screen Space, so it can't be trusted to resume.)
@@ -87,6 +101,25 @@ final class PlaybackGate {
 
     private func updateLowPower() {
         set(.lowPower, ProcessInfo.processInfo.isLowPowerModeEnabled && !playsInLowPowerMode)
+    }
+
+    /// Applies the battery settings: pause on battery power, or below a battery percentage.
+    func updateBattery() {
+        let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+        let onBattery = (IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?) == kIOPMBatteryPowerKey
+        var percent = 100
+        for source in IOPSCopyPowerSourcesList(info).takeRetainedValue() as [CFTypeRef] {
+            guard let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                  let current = description[kIOPSCurrentCapacityKey] as? Int,
+                  let max = description[kIOPSMaxCapacityKey] as? Int, max > 0 else { continue }
+            percent = current * 100 / max
+        }
+        let threshold = Prefs.value("pauseBelowBattery", 0)
+        let pauseOnBattery = Prefs.value("pauseOnBattery", false)
+        let wasPaused = reasons.contains(.onBattery) || reasons.contains(.lowBattery)
+        if onBattery && pauseOnBattery { reasons.insert(.onBattery) } else { reasons.remove(.onBattery) }
+        if onBattery && threshold > 0 && percent < threshold { reasons.insert(.lowBattery) } else { reasons.remove(.lowBattery) }
+        if wasPaused != (reasons.contains(.onBattery) || reasons.contains(.lowBattery)) { apply() }
     }
 
     private func set(_ reason: Reason, _ active: Bool) {

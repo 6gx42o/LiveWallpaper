@@ -137,7 +137,7 @@ struct EditorView: View {
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
-                    label("Trim")
+                    label("Trim", info: "Plays only the part between Start and End, looping it seamlessly. Handy for cutting intros, logos or a jumpy loop point. The original file isn't changed.")
                     HStack {
                         timeSlider("Start", value: binding(\.trimStart), range: 0...max(editor.trimEnd - 0.5, 0.01)) { editor.restartPreview() }
                         timeSlider("End", value: Binding(get: { editor.trimEnd }, set: { editor.edits.trimEnd = $0 >= editor.info.duration - 0.01 ? nil : $0 }),
@@ -145,14 +145,14 @@ struct EditorView: View {
                     }
                 }
                 GridRow {
-                    label("Speed")
+                    label("Speed", info: "Plays the wallpaper slower or faster. Slower motion is calmer and, at lower speeds, a little easier on the battery.")
                     Picker("Speed", selection: Binding(get: { editor.edits.speed }, set: { editor.edits.speed = $0; editor.restartPreview() })) {
                         ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { Text(String(format: "%g×", $0)).tag($0) }
                     }
                     .labelsHidden().pickerStyle(.segmented).frame(maxWidth: 360)
                 }
                 GridRow {
-                    label("Framing")
+                    label("Framing", info: "Fill covers the whole screen and crops what doesn't fit — use Position to choose which part shows. Fit shows the whole video with black bars.")
                     HStack(spacing: 14) {
                         Picker("Framing", selection: binding(\.fill)) {
                             Text("Fill screen").tag(true)
@@ -170,7 +170,7 @@ struct EditorView: View {
                     }
                 }
                 GridRow {
-                    label("Lock screen")
+                    label("Lock screen", info: "Pick the frame used as your lock screen picture (macOS only allows a still there). Preview shows it above; Use for Lock Screen saves and applies it.")
                     HStack {
                         Slider(value: binding(\.lockFrame), in: 0...max(editor.info.duration - 0.05, 0.01)) { editing in
                             if !editing { editor.showLockFrame() }
@@ -201,7 +201,10 @@ struct EditorView: View {
 
     private var quality: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(verbatim: "Quality on your \(Int(display.width))×\(Int(display.height)) display").font(.subheadline.weight(.semibold))
+            HStack(spacing: 4) {
+                Text(verbatim: "Quality on your \(Int(display.width))×\(Int(display.height)) display").font(.subheadline.weight(.semibold))
+                InfoButton("Checks this video, with your edits, against your display: whether it's sharp enough, whether its shape matches the screen, and its frame rate. Low-resolution videos can be upscaled into a sharper copy.")
+            }
             if issues.isEmpty {
                 Label("Looks great — resolution and aspect ratio match your display.", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green).font(.callout)
@@ -225,8 +228,12 @@ struct EditorView: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func label(_ text: String) -> some View {
-        Text(text).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+    private func label(_ text: String, info: String) -> some View {
+        HStack(spacing: 4) {
+            InfoButton(info)
+            Text(text).foregroundStyle(.secondary)
+        }
+        .gridColumnAlignment(.trailing)
     }
 
     private func binding<T>(_ keyPath: WritableKeyPath<Edits, T>) -> Binding<T> {

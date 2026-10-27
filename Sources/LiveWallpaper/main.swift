@@ -10,7 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let button = statusItem.button
-        button?.image = NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: "LiveWallpaper")
+        updateStatusIcon()
+        model.onPrefsChanged = { [unowned self] in updateStatusIcon() }
         button?.target = self
         button?.action = #selector(togglePanel(_:))
 
@@ -22,7 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = makeMainMenu()
 
         // First run: nothing to show yet, so open the window instead of leaving only a menu bar icon.
-        if model.library.videos.isEmpty { showMainWindow() }
+        if model.library.videos.isEmpty || model.prefs.openWindowAtLaunch { showMainWindow() }
+    }
+
+    private func updateStatusIcon() {
+        statusItem.button?.image = NSImage(systemSymbolName: model.prefs.menuBarIcon.rawValue, accessibilityDescription: "LiveWallpaper")
     }
 
     /// `open -a LiveWallpaper clip.mov` / Open With → import.
@@ -85,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let main = NSMenu()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Settings…", action: #selector(showTab(_:)), keyEquivalent: ",").tag = AppModel.Tab.allCases.firstIndex(of: .settings)!
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide LiveWallpaper", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -102,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let wallpaperMenu = NSMenu(title: "Wallpaper")
         let pause = wallpaperMenu.addItem(withTitle: "Pause", action: #selector(togglePause), keyEquivalent: "p")
         pause.keyEquivalentModifierMask = [.option, .command]
+        wallpaperMenu.addItem(withTitle: "Next Wallpaper", action: #selector(nextWallpaper), keyEquivalent: "]")
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
@@ -125,6 +132,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func addFromYouTube() { model.tab = .wallpapers; model.addFromYouTube() }
     @objc private func findVideos() { model.tab = .wallpapers; model.startScan() }
     @objc private func togglePause() { model.gate.userPaused.toggle() }
+    @objc private func nextWallpaper() { model.nextWallpaper() }
+    @objc private func checkForUpdates() {
+        model.tab = .settings
+        showMainWindow()
+        model.updater.check(userInitiated: true)
+    }
 
     @objc private func showTab(_ sender: NSMenuItem) {
         model.tab = AppModel.Tab.allCases[sender.tag]

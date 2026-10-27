@@ -19,33 +19,71 @@ enum ModelAdvisor {
     private static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
     /// Approximate peak memory for upscaling one `input`-sized frame (bytes).
+    /// Real-ESRGAN runs in tiles, so it's mostly a fixed cost plus the enlarged output frame
+    /// (measured on an M5: 1.2 GB for Small/Medium and 1.8 GB for Large 4× at 1080p).
     static func estimatedMemory(_ engine: Upscaler.Engine, input: CGSize) -> Int64 {
         let pixels = Int64(input.width * input.height)
+        if let model = engine.esrgan {
+            let frames = pixels * Int64(model.scale * model.scale) * 4 + pixels * 6
+            let fixed: Int64 = switch engine {
+            case .realESRGANLarge: 1_600_000_000
+            case .realESRGANLarge2x: 700_000_000
+            default: 1_000_000_000
+            }
+            let tileFactor: Double = switch UpscaleSettings.snapshot().tile {
+            case .auto: 1
+            case .small: 0.6
+            case .large: 2.2
+            }
+            return Int64(Double(fixed) * tileFactor) + frames + 250_000_000
+        }
         switch engine {
-        // 64-channel float feature maps (a few alive at once) + the 4× RGB output, plus the model and runtime.
-        case .realESRGAN: return pixels * 64 * 4 * 3 + pixels * 16 * 3 * 4 * 2 + 350_000_000
         // Apple's network keeps 4× BGRA frames for temporal consistency plus its model.
         case .appleSuperResolution: return pixels * 16 * 4 * 3 + 450_000_000
         // Lanczos only needs the output frame.
-        case .basic: return pixels * 16 * 4 + 150_000_000
+        default: return pixels * 16 * 4 + 150_000_000
+        }
+    }
+
+    /// Rough seconds per frame for `input` on this Mac, from timings on an M5 (10 GPU cores),
+    /// scaled by GPU cores. nil for engines that don't depend on the GPU this way.
+    static func secondsPerFrame(_ engine: Upscaler.Engine, input: CGSize) -> Double? {
+        let perMegapixel: Double
+        switch engine {
+        case .realESRGANSmall: perMegapixel = 0.26
+        case .realESRGAN: perMegapixel = 0.35
+        case .realESRGANLarge2x: perMegapixel = 1.1
+        case .realESRGANLarge: perMegapixel = 5.1
+        default: return nil
+        }
+        let speed = Double(SystemInfo.gpuCores ?? 8) / 10
+        let precision = UpscaleSettings.snapshot().fullPrecision ? 1.6 : 1
+        return input.width * input.height / 1_000_000 * perMegapixel * precision / speed
+    }
+
+    /// "Fastest" … "Slowest", for the model list.
+    static func speedLabel(_ engine: Upscaler.Engine) -> String {
+        switch engine {
+        case .basic: "Instant"
+        case .realESRGANSmall: "Fastest ML"
+        case .appleSuperResolution, .realESRGAN: "Fast"
+        case .realESRGANLarge2x: "Slow"
+        case .realESRGANLarge: "Slowest, sharpest"
         }
     }
 
     /// Model download size, if it has one.
     static func downloadSize(_ engine: Upscaler.Engine) -> Int64? {
-        switch engine {
-        case .realESRGAN: RealESRGAN.downloadSize
-        case .appleSuperResolution: 72_000_000 // reported by macOS once installed; ~70 MB
-        case .basic: nil
-        }
+        if let model = engine.esrgan { return model.downloadSize }
+        return engine == .appleSuperResolution ? 72_000_000 : nil // Apple's is reported by macOS once installed; ~70 MB
     }
 
     static func availability(_ engine: Upscaler.Engine, input: CGSize = typicalInput) -> Availability {
         switch engine {
-        case .realESRGAN:
+        case .realESRGANSmall, .realESRGAN, .realESRGANLarge2x, .realESRGANLarge:
             guard hasMetal else { return .unavailable("Needs a Metal-capable GPU, which this Mac doesn't have.") }
-            guard max(input.width, input.height) <= 1920, min(input.width, input.height) <= 1080 else {
-                return .unavailable("Handles videos up to 1920×1080; this one is \(Int(input.width))×\(Int(input.height)). It's already sharp enough for most displays.")
+            if let model = engine.esrgan, !Upscaler.fits(input, model) {
+                return .unavailable("Handles videos up to \(Int(model.maxInput.width))×\(Int(model.maxInput.height)); this one is \(Int(input.width))×\(Int(input.height)). It's already sharp enough for most displays.")
             }
         case .appleSuperResolution:
             guard SystemInfo.isAppleSilicon else { return .unavailable("Needs an Apple silicon Mac (M1 or later); this Mac has \(SystemInfo.chip).") }
@@ -69,29 +107,27 @@ enum ModelAdvisor {
         return .ready
     }
 
-    /// The best choice for this Mac's chip and memory, with the reason.
+    /// The best choice for this Mac's chip, GPU and memory, with the reason: bigger Macs get bigger models.
     static func recommendation(input: CGSize = typicalInput) -> (engine: Upscaler.Engine, reason: String) {
         let ram = SystemInfo.bytes(SystemInfo.totalMemory)
+        let gb = SystemInfo.totalMemory >> 30
+        let cores = SystemInfo.gpuCores ?? 0
+        let mac = "\(SystemInfo.chip)\(cores > 0 ? " (\(cores)-core GPU)" : "") with \(ram)"
         if !SystemInfo.isAppleSilicon {
-            return (.basic, "Your \(SystemInfo.chip) has no Neural Engine, so ML upscaling would be very slow — Basic is quickest.")
+            return (.basic, "Your \(SystemInfo.chip) has no Apple GPU or Neural Engine, so ML upscaling would be very slow — Basic is quickest.")
         }
-        let esrgan = availability(.realESRGAN, input: input)
-        let apple = availability(.appleSuperResolution, input: input)
-        if SystemInfo.memoryPressure() >= 2, esrgan.canRun {
-            return (.realESRGAN, "It's the best fit for your \(ram), but macOS is short on memory right now — free up memory first (Memory tab).")
+        // Largest model first; each must run here and suit this Mac's power.
+        let ladder: [(Upscaler.Engine, Bool, String)] = [
+            (.realESRGANLarge, gb >= 32 && cores >= 16, "Your \(mac) is powerful enough for the sharpest model."),
+            (.realESRGANLarge2x, gb >= 24 && cores >= 14, "Your \(mac) can run the full-size network; at 2× it's the best fit for videos that are only a little too small."),
+            (.realESRGAN, gb >= 16, "It runs comfortably on your \(mac) — sharp results at a good speed."),
+            (.realESRGANSmall, gb >= 8, "The lightest ML model suits your \(mac); it's fastest and easiest on memory."),
+            (.appleSuperResolution, true, "With \(ram), Apple Super Resolution is the lightest ML choice."),
+        ]
+        let pressured = SystemInfo.memoryPressure() >= 2
+        for (engine, suits, reason) in ladder where suits && availability(engine, input: input).canRun {
+            return (engine, pressured ? reason + " macOS is short on memory right now, so free up memory first (Memory section)." : reason)
         }
-        if SystemInfo.totalMemory >= 16 << 30, esrgan.canRun {
-            return (.realESRGAN, "It runs comfortably with \(ram) — the sharpest results, and you can delete its model.")
-        }
-        if apple.canRun {
-            return (.appleSuperResolution, "With \(ram), Apple Super Resolution is the lighter choice — it uses less memory than Real-ESRGAN.")
-        }
-        if esrgan.canRun {
-            return (.realESRGAN, "It fits in \(ram); close other apps first for large videos.")
-        }
-        if case .unavailable(let reason) = esrgan, case .unavailable = apple {
-            return (.basic, "Neither ML upscaler can run for this video (Real-ESRGAN: \(reason)), so Basic is used.")
-        }
-        return (.basic, "The ML upscalers need more free memory than is available right now, so Basic is used — or free up memory and use Real-ESRGAN.")
+        return (.basic, "The ML upscalers can't run for this video right now, so Basic is used — free up memory or try a smaller model.")
     }
 }

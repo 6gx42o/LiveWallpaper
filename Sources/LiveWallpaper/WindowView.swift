@@ -18,6 +18,7 @@ struct WindowView: View {
                 .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1), value: model.isDropTargeted)
         }
         .frame(minWidth: 860, minHeight: 580)
+        .tint(model.prefs.accent.color)
         .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
             if let editor = model.editor {
                 EditorView(
@@ -121,8 +122,10 @@ private struct Sidebar: View {
         HStack {
             Label(tab.rawValue, systemImage: tab.symbol)
             Spacer()
-            Text(tab == .settings ? "⌘," : "⌘\((AppModel.Tab.allCases.firstIndex(of: tab) ?? 0) + 1)")
-                .font(.caption).foregroundStyle(.tertiary)
+            if model.prefs.showShortcutHints {
+                Text(tab == .settings ? "⌘," : "⌘\((AppModel.Tab.allCases.firstIndex(of: tab) ?? 0) + 1)")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
         }
         .tag(tab)
     }
@@ -136,9 +139,11 @@ private struct WallpapersPane: View {
     var body: some View {
         let lib = model.library
         VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: 20) {
-                homeScreen
-                lockScreen
+            if model.prefs.showPreviews {
+                HStack(alignment: .top, spacing: 20) {
+                    homeScreen
+                    lockScreen
+                }
             }
 
             if lib.converting != nil || !lib.notices.isEmpty {
@@ -163,11 +168,12 @@ private struct WallpapersPane: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Library").font(.title3.weight(.semibold))
                         Text("\(lib.videos.count)").foregroundStyle(.secondary).monospacedDigit()
+                        InfoButton("Every video you've added, converted for smooth, battery-friendly playback. Click one to make it your home screen; click its lock to use a still of it on the lock screen. Hover for edit and trash buttons, or right-click for everything.")
                         Spacer()
                         Text("Click to set the home screen · drop videos anywhere to add")
                             .font(.caption).foregroundStyle(.tertiary)
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 320), spacing: 16)], spacing: 18) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: model.prefs.tileSize.minWidth, maximum: model.prefs.tileSize.minWidth * 1.6), spacing: 16)], spacing: 18) {
                         ForEach(lib.videos, id: \.self) { url in
                             WallpaperTile(model: model, url: url)
                         }
@@ -182,7 +188,8 @@ private struct WallpapersPane: View {
     private var homeScreen: some View {
         let url = model.isCurrentBroken ? nil : model.current
         let info = url.flatMap { model.library.infos[$0] }
-        return ScreenCaption(title: "Home Screen", detail: name(model.current) ?? "No video — pick one below", symbol: "house.fill") {
+        return ScreenCaption(title: "Home Screen", detail: name(model.current) ?? "No video — pick one below", symbol: "house.fill",
+                             info: "What's behind your desktop icons right now: the wallpaper video, playing live. It pauses when nobody can see it — covered by full-screen apps, the screen asleep or locked, Low Power Mode, or the battery rules in Settings.") {
             ScreenFrame(showsMenuBar: true) {
                 if let url, let info, let player = model.previewPlayer {
                     PlayerPreview(player: player, video: info.size, edits: model.library.edits(for: url))
@@ -200,7 +207,8 @@ private struct WallpapersPane: View {
     }
 
     private var lockScreen: some View {
-        ScreenCaption(title: "Lock Screen", detail: name(model.lockScreen) ?? "Your own desktop picture", symbol: "lock.fill") {
+        ScreenCaption(title: "Lock Screen", detail: name(model.lockScreen) ?? "Your own desktop picture", symbol: "lock.fill",
+                      info: "macOS doesn't let apps play video on the lock screen, so LiveWallpaper sets a full-quality still from a video (pick the frame in the editor) as your desktop picture, which is what the lock screen shows. Restore Mine puts your own picture back.") {
             ScreenFrame {
                 if let still = model.lockPreview { Image(nsImage: still).resizable().scaledToFill() }
             }
@@ -268,6 +276,7 @@ private struct ScreenCaption<Screen: View, Accessory: View>: View {
     let title: String
     let detail: String
     let symbol: String
+    let info: String
     @ViewBuilder let screen: Screen
     @ViewBuilder let accessory: Accessory
 
@@ -277,6 +286,7 @@ private struct ScreenCaption<Screen: View, Accessory: View>: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Label(title, systemImage: symbol).font(.headline)
+                    InfoButton(info)
                     Spacer()
                     accessory.font(.caption).foregroundStyle(.secondary)
                 }
@@ -308,55 +318,5 @@ private struct DropOverlay: View {
                 .padding(12)
         )
         .allowsHitTesting(false)
-    }
-}
-
-// MARK: - Settings
-
-private struct SettingsPane: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Form {
-            Section("Playback") {
-                Toggle(isOn: Binding(get: { model.gate.playsInLowPowerMode }, set: { model.gate.playsInLowPowerMode = $0 })) {
-                    Text("Play in Low Power Mode")
-                    Text("Off saves battery: the wallpaper pauses in Low Power Mode.")
-                }
-                Toggle(isOn: Binding(get: { model.gate.pausesWhenCovered }, set: { model.gate.pausesWhenCovered = $0 })) {
-                    Text("Pause when the desktop is covered")
-                    Text("Full-screen apps or maximized windows hide the wallpaper anyway.")
-                }
-            }
-            Section("General") {
-                Toggle(isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })) {
-                    Text("Open at login")
-                    Text(model.launchAtLoginNeedsApproval
-                         ? "Allow it in System Settings › General › Login Items."
-                         : "Start LiveWallpaper automatically.")
-                }
-            }
-            Section {
-                Picker(selection: Binding(get: { model.resolution }, set: { model.resolution = $0 })) {
-                    ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
-                } label: {
-                    Text("Resolution")
-                    Text("Wallpapers are checked and upscaled for this. Native is your display's own resolution.")
-                }
-                Picker("Upscaler", selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
-                    ForEach(Upscaler.Engine.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video", compact: true, engines: [model.upscaler])
-                Toggle(isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 })) {
-                    Text("Ask after upscaling")
-                    Text("Offer to keep or delete the Real-ESRGAN model each time it's used.")
-                }
-            } header: {
-                Text("Quality & upscaling")
-            } footer: {
-                Button("Compare all models…") { model.tab = .upscale }.buttonStyle(.link)
-            }
-        }
-        .formStyle(.grouped)
     }
 }

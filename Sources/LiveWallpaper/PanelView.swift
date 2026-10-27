@@ -22,6 +22,7 @@ struct PanelView: View {
         }
         .padding(16)
         .frame(width: 340)
+        .tint(model.prefs.accent.color)
     }
 
     private func name(_ url: URL?) -> String? { url?.deletingPathExtension().lastPathComponent }
@@ -88,8 +89,9 @@ struct PanelView: View {
     private var library: some View {
         let lib = model.library
         return VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 4) {
                 Text("Wallpapers").font(.subheadline.weight(.semibold))
+                InfoButton("Click a wallpaper to play it behind your desktop icons; click its lock to use it on the lock screen. Open the window (the button above) to drag in videos, edit, upscale and change settings.")
                 Spacer()
                 Button {
                     model.addVideos()
@@ -132,16 +134,42 @@ struct PanelView: View {
 
 // MARK: - Components
 
-/// Tracks the pointer over a view (this toolchain has no @State).
-final class Hover: ObservableObject {
+/// A bit of view state, e.g. hovered or shown (this toolchain has no @State).
+final class Flag: ObservableObject {
     @Published var isOn = false
+}
+
+/// A small ⓘ button that explains what the thing next to it does.
+struct InfoButton: View {
+    let text: String
+    @StateObject private var shown = Flag()
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Button { shown.isOn.toggle() } label: {
+            Image(systemName: "info.circle").imageScale(.small)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(text)
+        .accessibilityLabel("More info")
+        .accessibilityHint(text)
+        .popover(isPresented: $shown.isOn, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .frame(width: 280, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+        }
+    }
 }
 
 /// A library thumbnail: click for home screen; lock, edit and remove on hover or right-click.
 struct WallpaperTile: View {
     @ObservedObject var model: AppModel
     let url: URL
-    @StateObject private var hover = Hover()
+    @StateObject private var hover = Flag()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var name: String { url.deletingPathExtension().lastPathComponent }

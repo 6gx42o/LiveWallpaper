@@ -10,10 +10,19 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
 - **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
 - **Upscaling, with models only when you ask.** Nothing is bundled with the app. Each model downloads only when you press **Download** (Settings or the Upscale tab) or **Upscale** (after asking), with a progress bar showing size downloaded, time left and time elapsed. Engines:
-  - **Real-ESRGAN** — the official 4.9 MB `realesr-general-x4v3` weights, hash-verified, stored in LiveWallpaper's own folder, run on the GPU. After each upscale you're asked whether to keep or delete it; Settings has **Delete…** (with confirmation).
+  - **Real-ESRGAN, in four sizes** — the official weights, SHA-256-pinned, stored in LiveWallpaper's own folder and run on the GPU (Metal Performance Shaders Graph, half precision, in tiles so memory stays bounded). After each upscale you're asked whether to keep or delete the model; every model has **Delete…** (with confirmation).
+
+    | Model | Weights | Best for | Speed on an M5 (10-core GPU) | Peak memory at 1080p |
+    |---|---|---|---|---|
+    | Small (`realesr-animevideov3`) | 2.5 MB | 8 GB Macs; animation, games, graphics | ~1.0 s/frame | ~1.2 GB |
+    | Medium (`realesr-general-x4v3`) | 4.9 MB | most Macs; real-world footage | ~1.3 s/frame | ~1.2 GB |
+    | Large 2× (`RealESRGAN_x2plus`) | 64 MB | Pro/Max chips; videos only a little too small | ~2.5 s/frame | ~0.8 GB |
+    | Large 4× (`RealESRGAN_x4plus`) | 64 MB | Max/Ultra chips with 32 GB+; very small videos | ~14 s/frame | ~1.8 GB |
+
+    The **Recommended** badge picks the largest model your chip, GPU core count and memory can run comfortably.
   - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it.
   - **Basic** — Lanczos scaling, no download.
-- **Advice for your Mac.** Each model shows how much RAM it needs for the video, whether it runs on your chip, why not if it can't (too much RAM, unsupported chip/macOS/resolution), and which one is **Recommended** for your chip and memory.
+- **Advice for your Mac.** Each model shows how much RAM it needs for the video, roughly how long each frame takes on your GPU, whether it runs on your chip, why not if it can't (too much RAM, unsupported chip/macOS/resolution), and which one is **Recommended** for your chip and memory.
 - **Memory tab.** See RAM in use, the apps using the most, quit the ones you pick (or all others) after a confirmation — apps still ask to save — and **Clean Memory** (clears macOS's file cache with `purge`; macOS asks for your password).
 - **Resolution.** Choose what wallpapers are checked and upscaled for; the default is your display's true native resolution, detected on any Mac or monitor.
 - **Upscale tab.** Upscale any video, GIF or image without making it a wallpaper; results go to Movies › LiveWallpaper Upscaled, with *Use as Wallpaper* one click away.
@@ -34,7 +43,16 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - damaged videos already in the library, and videos that fail during playback, show a red *Broken* tile
 - **Menu bar panel and a full Mac window.** The panel is for quick picks. The window has a sidebar (Wallpapers, Upscale, Memory, Settings), each section's actions in the toolbar, and live miniatures of your home screen (the wallpaper actually playing) and lock screen (with the clock drawn over it). It's resizable and full-screen capable.
 - **Keyboard shortcuts:** ⌘1–⌘3 switch sections, ⌘, opens Settings, ⌘O adds a video, ⌘L adds from YouTube, ⇧⌘F finds videos on this Mac, ⌥⌘P pauses or resumes.
-- **Settings:** play in Low Power Mode, pause when the desktop is covered, open at login, resolution, upscaler.
+- **ⓘ on everything.** Every setting, section and model has an ⓘ button that explains what it does.
+- **Lots of settings** (each with an ⓘ):
+  - *Playback* — Low Power Mode, pause when covered, pause on battery, pause below a battery level, all displays or only the main one, dim the wallpaper
+  - *Rotation* — change the wallpaper every 15 minutes to every day, in order or shuffled; **Next Wallpaper** (⌘])
+  - *Appearance* — light/dark theme, accent colour, menu bar icon, thumbnail size, screen previews, shortcut hints
+  - *General* — open at login, open the window at launch, ask before trashing
+  - *Importing* — largest size to keep (display / 4K / 1080p), YouTube quality, upscale low-resolution videos automatically, import tips
+  - *Upscaling* — resolution, upscaler, work (tile) size, full-precision maths, output quality, output folder
+  - *Memory* — refresh rate; *Updates* — see below; and **Restore Defaults**
+- **Updates itself in place.** LiveWallpaper checks GitHub's latest release (daily or weekly, or **Check for Updates…**). A new version is downloaded, its checksum, bundle ID, version and code signature are verified, and it **replaces the app where it is** — same name, same folder — then reopens. Your settings, wallpapers, edits, models and login item stay; there's no second copy to delete. Turn off automatic installing to update with a click instead.
 
 ## Why it's light on battery
 
@@ -65,6 +83,10 @@ open LiveWallpaper.app
 ```
 
 `build.sh` compiles a release build and assembles an ad-hoc signed `LiveWallpaper.app` next to it. Move it to `/Applications` if you like.
+
+### Releases
+
+Every push to `main` that changes the app runs [`.github/workflows/release.yml`](.github/workflows/release.yml): it builds on a macOS runner with version `1.<run number>`, zips the app and publishes a GitHub release. Installed copies pick it up through the updater above. (Local builds are version 1.0, so they update to the next release too.)
 
 ## Usage
 
@@ -98,12 +120,15 @@ macOS doesn't let apps draw on the lock screen — only Apple's own aerial wallp
 Sources/LiveWallpaper/
   main.swift             app entry, menu bar panel & window
   AppModel.swift         state: home/lock wallpapers, editor, upscaling, settings
-  WindowView.swift       the window: sidebar, toolbar, home/lock previews, Settings
+  WindowView.swift       the window: sidebar, toolbar, home/lock previews
+  SettingsView.swift     Settings, with an ⓘ on every option
+  Prefs.swift            every customisation, stored in UserDefaults
+  Updater.swift          checks GitHub releases, verifies and installs updates in place
   PanelView.swift        the menu bar panel + shared tile, notice and drop-zone views
   EditorView.swift       trim / speed / framing / lock frame / quality editor
   VideoInfo.swift        video facts, quality checks against the display, edit model
   Upscaler.swift         upscaling engines (Real-ESRGAN, Apple Super Resolution, Lanczos) + frame pipeline
-  RealESRGAN.swift       on-request model download/verify/delete and the network on Metal (MPSGraph)
+  RealESRGAN.swift       the four models: download/verify/delete, PyTorch weight reader, networks on Metal (MPSGraph)
   UpscalerModel.swift    reports Apple's macOS-managed model
   VideoScanner.swift     "Find Videos" scan + results sheet
   ModelAdvisor.swift     per-Mac RAM estimates, can-it-run reasons, recommendation
@@ -119,7 +144,8 @@ Sources/LiveWallpaper/
   Library.swift          import → convert (AVFoundation, ffmpeg fallback) → analysis, edits, upscale jobs
   WallpaperWindow.swift  desktop-level window that loops the video
 Resources/AppIcon.icns   app icon (regenerate with scripts/make-icon.swift)
-build.sh                 builds LiveWallpaper.app
+build.sh                 builds LiveWallpaper.app (VERSION=… stamps a version)
+.github/workflows/       release on every push to main
 ```
 
 ## License

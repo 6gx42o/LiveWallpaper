@@ -6,6 +6,16 @@ final class WallpaperWindow: NSWindow {
     let player = AVQueuePlayer()
     let displayID: CGDirectDisplayID
     private let playerLayer: AVPlayerLayer
+    /// Black layer over the video; its opacity is the "Dim wallpaper" setting.
+    private let dimLayer = CALayer()
+    var dimming = 0.0 {
+        didSet {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.25)
+            dimLayer.opacity = Float(dimming)
+            CATransaction.commit()
+        }
+    }
     private var looper: AVPlayerLooper?
     private var statusObservation: NSKeyValueObservation?
     /// What's loaded, so identical reloads are skipped.
@@ -36,6 +46,10 @@ final class WallpaperWindow: NSWindow {
         container.backgroundColor = NSColor.black.cgColor
         container.masksToBounds = true
         container.addSublayer(playerLayer)
+        dimLayer.backgroundColor = NSColor.black.cgColor
+        dimLayer.opacity = 0
+        dimLayer.frame = CGRect(origin: .zero, size: screen.frame.size)
+        container.addSublayer(dimLayer)
         let view = NSView()
         view.layer = container
         view.wantsLayer = true

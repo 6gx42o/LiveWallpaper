@@ -20,8 +20,13 @@ final class UpscaleStudio: ObservableObject {
     /// Called after an upscale so the app can refresh model sizes.
     var onFinished: ((Upscaler.Method) -> Void)?
 
-    static let outputDir: URL = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+    static let defaultOutputDir: URL = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
         .appending(path: "LiveWallpaper Upscaled", directoryHint: .isDirectory)
+    /// Where results go: the folder chosen in Settings, or Movies › LiveWallpaper Upscaled.
+    static var outputDir: URL {
+        let chosen = Prefs.value("upscaleFolder", "")
+        return chosen.isEmpty ? defaultOutputDir : URL(fileURLWithPath: chosen, isDirectory: true)
+    }
 
     var isBusy: Bool { progress != nil }
     var target: CGSize? { info.map { Upscaler.targetSize(for: $0.size, display: resolution.size) } }
@@ -105,7 +110,7 @@ struct UpscaleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to Movies › LiveWallpaper Upscaled.")
+            Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to \(UpscaleStudio.outputDir.lastPathComponent) (change it in Settings).")
                 .font(.callout).foregroundStyle(.secondary)
 
             if let source = studio.source {
@@ -137,7 +142,10 @@ struct UpscaleView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Text("Models on this Mac").font(.headline)
+                HStack(spacing: 4) {
+                    Text("Models on this Mac").font(.headline)
+                    InfoButton("Every upscaler, smallest to largest, with how much memory and time each needs on this Mac and whether it can run. Bigger models add more detail but need more memory and a faster GPU. Click one to choose it; download or delete Real-ESRGAN models here.")
+                }
                 ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video",
                           selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 }))
             }
@@ -145,6 +153,7 @@ struct UpscaleView: View {
             if let info = studio.info, let target = studio.target {
                 HStack {
                     Text("Output resolution").foregroundStyle(.secondary)
+                    InfoButton("The size to enlarge to. Native matches your display exactly. The model enlarges the video, then it's resized precisely to this size.")
                     Picker("Output resolution", selection: $studio.resolution) {
                         ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
                     }
