@@ -112,7 +112,7 @@ struct UpscaleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to \(UpscaleStudio.outputDir.lastPathComponent) (change it in Settings).")
+            Text("Make any video, GIF or image sharper — you don't have to use it as a wallpaper. Results go to \(UpscaleStudio.outputDir.lastPathComponent).")
                 .font(.callout).foregroundStyle(.secondary)
 
             if let source = studio.source {
@@ -144,6 +144,15 @@ struct UpscaleView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 4) {
+                Text("Upscale settings").font(.headline)
+                InfoButton("How upscaling works on this Mac: the resolution to aim for, how much memory each frame may use, the quality of saved videos and where they go. The model itself is chosen in the list below.")
+            }
+            UpscaleSettingsCard(model: model, prefs: model.prefs)
+
+            if studio.source == nil {
                 HStack(spacing: 4) {
                     Text("Models on this Mac").font(.headline)
                     InfoButton("Every upscaler, smallest to largest, with how much memory and time each needs on this Mac and whether it can run. Bigger models add more detail but need more memory and a faster GPU. The three picks at the top are worked out for this Mac; models it can't handle are greyed out with the reason. Click one to choose it; download or delete models here.")

@@ -175,10 +175,6 @@ struct SettingsPane: View {
             } label: {
                 label("YouTube download quality", info: "The highest resolution fetched from YouTube links. Match my display picks 4K for large displays and 1440p otherwise. Higher means sharper but bigger downloads.")
             }
-            Toggle(isOn: bind(\.autoUpscale)) {
-                label("Upscale low-resolution videos automatically", "Uses the upscaler below, if its model is already downloaded.",
-                      info: "When a video you add would look soft on your display, it's upscaled right away instead of showing an Upscale button. Models are never downloaded without asking, so this only happens once the chosen upscaler is ready.")
-            }
             Toggle(isOn: bind(\.showImportTips)) {
                 label("Show tips after importing", info: "After adding a video, LiveWallpaper mentions small things worth knowing — slightly soft resolution, low frame rate, or a mismatched shape. Warnings about real problems always show.")
             }
@@ -186,59 +182,13 @@ struct SettingsPane: View {
     }
 
     private var upscaling: some View {
-        Section {
-            Picker(selection: Binding(get: { model.resolution }, set: { model.resolution = $0 })) {
-                ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
-            } label: {
-                label("Resolution", "Wallpapers are checked and upscaled for this.",
-                      info: "The screen size wallpapers are judged and upscaled against. Native is your display's own pixel count, so upscaled wallpapers are as sharp as your screen can show.")
+        Section("Upscaling") {
+            HStack {
+                label("Upscaling options", "Model, resolution, quality and where results go are in the Upscale section.",
+                      info: "Everything about upscaling — which model, its speed and quality picks for this Mac, the resolution, work size, video quality and the folder for results — lives in the Upscale section, next to the models themselves.")
+                Spacer()
+                Button("Open Upscale") { model.tab = .upscale }
             }
-            Picker(selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 })) {
-                ForEach(Upscaler.Engine.allCases, id: \.self) { engine in
-                    let canRun = ModelAdvisor.availability(engine).canRun
-                    Text(engine.title + (canRun ? "" : " — too much for this Mac")).tag(engine)
-                        .selectionDisabled(!canRun)
-                }
-            } label: {
-                label("Upscaler", info: "Which model the Upscale buttons use. Small models are fast and light; Large ones add more detail but need a powerful Mac and lots of time. The card below shows how it would run on this Mac.")
-            }
-            ModelList(model: model, input: ModelAdvisor.typicalInput, inputLabel: "a 1080p video",
-                      selection: Binding(get: { model.upscaler }, set: { model.upscaler = $0 }), compact: true, engines: [model.upscaler])
-            Toggle(isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 })) {
-                label("Ask after upscaling", "Offer to keep or delete the downloaded model each time it's used.",
-                      info: "After each upscale, asks whether to keep the model for next time or delete it to free disk space.")
-            }
-            Picker(selection: bind(\.upscaleTile)) {
-                ForEach(TileChoice.allCases, id: \.self) { Text($0.title).tag($0) }
-            } label: {
-                label("Work size", info: "Real-ESRGAN processes each frame in tiles. Smaller tiles use less memory (good for 8 GB Macs or the Large models) but take a little longer; larger tiles are faster if you have memory to spare.")
-            }
-            Toggle(isOn: bind(\.upscaleFullPrecision)) {
-                label("Full-precision maths", "Slower; results look the same in almost every case.",
-                      info: "Real-ESRGAN normally runs in half precision, which is much faster on Apple GPUs and is how its authors run it. Full precision is there if you ever see banding or odd colours.")
-            }
-            LabeledContent {
-                HStack {
-                    Slider(value: bind(\.upscaleQuality), in: 0.6...1).frame(maxWidth: 220)
-                    Text("\(Int((prefs.upscaleQuality * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
-                }
-            } label: {
-                label("Upscaled video quality", info: "How much detail the HEVC encoder keeps when saving an upscaled video. Higher looks better but makes bigger files. 85% is visually lossless for most wallpapers.")
-            }
-            LabeledContent {
-                HStack {
-                    Text(UpscaleStudio.outputDir.path(percentEncoded: false)).lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(.secondary).frame(maxWidth: 260, alignment: .trailing)
-                    Button("Choose…", action: chooseFolder)
-                    if !prefs.upscaleFolder.isEmpty { Button("Reset") { prefs.upscaleFolder = "" } }
-                }
-            } label: {
-                label("Save upscaled videos to", info: "Where the Upscale section saves its results. Wallpapers you upscale from the library stay in the library either way.")
-            }
-        } header: {
-            Text("Upscaling")
-        } footer: {
-            Button("Compare all models…") { model.tab = .upscale }.buttonStyle(.link)
         }
     }
 
@@ -310,27 +260,8 @@ struct SettingsPane: View {
         Binding(get: { prefs[keyPath: keyPath] }, set: { prefs[keyPath: keyPath] = $0 })
     }
 
-    /// A setting's title with its ⓘ, and an optional one-line description under it.
     private func label(_ title: String, _ detail: String? = nil, info: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                Text(title)
-                InfoButton(info)
-            }
-            if let detail {
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Choose"
-        panel.message = "Choose where upscaled videos are saved"
-        if panel.runModal() == .OK, let url = panel.url { prefs.upscaleFolder = url.path }
+        SettingLabel(title: title, detail: detail, info: info)
     }
 
     private func confirmReset() {
@@ -344,5 +275,117 @@ struct SettingsPane: View {
         model.gate.playsInLowPowerMode = false
         model.gate.pausesWhenCovered = true
         model.asksToDeleteModel = true
+    }
+}
+
+/// A setting's title with its ⓘ, and an optional one-line description under it.
+struct SettingLabel: View {
+    let title: String
+    var detail: String?
+    let info: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(title)
+                InfoButton(info)
+            }
+            if let detail {
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// The upscaling options, shown in the Upscale section next to the models (each with its ⓘ).
+struct UpscaleSettingsCard: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var prefs: Prefs
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            row {
+                SettingLabel(title: "Resolution", detail: "Wallpapers are checked and upscaled for this.",
+                             info: "The screen size wallpapers are judged and upscaled against. Native is your display's own pixel count, so upscaled wallpapers are as sharp as your screen can show.")
+            } control: {
+                Picker("Resolution", selection: Binding(get: { model.resolution }, set: { model.resolution = $0 })) {
+                    ForEach(ResolutionChoice.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().frame(maxWidth: 320)
+            }
+            row {
+                SettingLabel(title: "Work size", info: "Models process each frame in tiles. Smaller tiles use less memory (good for 8 GB Macs or the big models) but take a little longer; larger tiles are faster if you have memory to spare. Automatic uses bigger tiles on 64 GB+ Macs.")
+            } control: {
+                Picker("Work size", selection: bind(\.upscaleTile)) {
+                    ForEach(TileChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().frame(maxWidth: 240)
+            }
+            row {
+                SettingLabel(title: "Full-precision maths", detail: "Slower; results look the same in almost every case.",
+                             info: "Models normally run in half precision, which is much faster on Apple GPUs and is how their authors run them. Full precision is there if you ever see banding or odd colours.")
+            } control: {
+                Toggle("Full-precision maths", isOn: bind(\.upscaleFullPrecision)).labelsHidden().toggleStyle(.switch)
+            }
+            row {
+                SettingLabel(title: "Upscaled video quality", info: "How much detail the HEVC encoder keeps when saving an upscaled video. Higher looks better but makes bigger files. 85% is visually lossless for most wallpapers.")
+            } control: {
+                HStack {
+                    Slider(value: bind(\.upscaleQuality), in: 0.6...1).frame(maxWidth: 200)
+                    Text("\(Int((prefs.upscaleQuality * 100).rounded()))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                }
+            }
+            row {
+                SettingLabel(title: "Save results to", info: "Where this section saves upscaled videos. Wallpapers you upscale from the library stay in the library either way.")
+            } control: {
+                HStack {
+                    Text(UpscaleStudio.outputDir.path(percentEncoded: false)).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.secondary).frame(maxWidth: 240, alignment: .trailing)
+                    Button("Choose…", action: chooseFolder)
+                    if !prefs.upscaleFolder.isEmpty { Button("Reset") { prefs.upscaleFolder = "" } }
+                }
+            }
+            row {
+                SettingLabel(title: "Upscale low-resolution imports automatically", detail: "Only when the chosen model is already downloaded.",
+                             info: "When a video you add would look soft on your display, it's upscaled right away instead of showing an Upscale button. Models are never downloaded without asking, so this only happens once the chosen upscaler is ready.")
+            } control: {
+                Toggle("Upscale automatically", isOn: bind(\.autoUpscale)).labelsHidden().toggleStyle(.switch)
+            }
+            row(last: true) {
+                SettingLabel(title: "Ask after upscaling", detail: "Offer to keep or delete the downloaded model each time it's used.",
+                             info: "After each upscale, asks whether to keep the model for next time or delete it to free disk space.")
+            } control: {
+                Toggle("Ask after upscaling", isOn: Binding(get: { model.asksToDeleteModel }, set: { model.asksToDeleteModel = $0 }))
+                    .labelsHidden().toggleStyle(.switch)
+            }
+        }
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func row<Label: View, Control: View>(last: Bool = false, @ViewBuilder _ label: () -> Label,
+                                                  @ViewBuilder control: () -> Control) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                label()
+                Spacer(minLength: 12)
+                control()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            if !last { Divider().padding(.leading, 14) }
+        }
+    }
+
+    private func bind<V>(_ keyPath: ReferenceWritableKeyPath<Prefs, V>) -> Binding<V> {
+        Binding(get: { prefs[keyPath: keyPath] }, set: { prefs[keyPath: keyPath] = $0 })
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose where upscaled videos are saved"
+        if panel.runModal() == .OK, let url = panel.url { prefs.upscaleFolder = url.path }
     }
 }
