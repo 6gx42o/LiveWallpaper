@@ -11,7 +11,7 @@ import MetalPerformanceShadersGraph
 enum RealESRGAN {
     /// One downloadable network.
     struct Model: Hashable, Sendable {
-        enum Architecture: Hashable, Sendable { case compact, rrdb, swinIR }
+        enum Architecture: Hashable, Sendable { case compact, rrdb, swinIR, hat }
         let file: String
         let url: URL
         let downloadSize: Int64
@@ -103,6 +103,20 @@ enum RealESRGAN {
         return model
     }()
 
+    /// HAT (Apache-2.0, © Xiangyu Chen) for real-world SR: hybrid window + channel attention with overlapping
+    /// cross-attention. The official file, from the author's Google Drive.
+    static let hat = Model(
+        file: "Real_HAT_GAN_SRx4.pth",
+        url: URL(string: "https://drive.usercontent.google.com/download?id=1Ma12vCWT27P9M99-s2RXnynKN-OQsBrv&export=download&confirm=t")!,
+        downloadSize: 170_277_017, sha256: "f5b1e3bbbb05147ca2beefcc715279cb647d7976cbda67d62ea7e6e20d5ffcc7",
+        architecture: .hat, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+    /// HAT trained for a crisper look (sharpened targets): more perceived detail, a little less faithful.
+    static let hatSharper = Model(
+        file: "Real_HAT_GAN_sharper.pth",
+        url: URL(string: "https://drive.usercontent.google.com/download?id=1EioFq5-mKmv1uqta_Byd9cgXp9SU3zjj&export=download&confirm=t")!,
+        downloadSize: 170_277_017, sha256: "5800b67136006eb8cab3b4ed7c8d73b6a195bb18e6cc709b674f9aa069c00271",
+        architecture: .hat, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+
     static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appending(path: "LiveWallpaper/Models", directoryHint: .isDirectory)
@@ -186,7 +200,8 @@ enum RealESRGAN {
             // Even sides (the 2× models fold pixels in pairs), multiples of 8 for SwinIR's attention windows;
             // the whole frame if it fits in one tile.
             // SwinIR's attention sees further than the convolutional networks, so it keeps more context per side.
-            let align = model.architecture == .swinIR ? 8 : 2, context = model.architecture == .swinIR ? 32 : 16
+            let align = [.swinIR: 8, .hat: 16][model.architecture] ?? 2
+            let context = align > 2 ? 32 : 16
             tileWidth = min(width, tile + 2 * context) / align * align
             tileHeight = min(height, tile + 2 * context) / align * align
             overlap = min(context, min(tileWidth, tileHeight) / 4)
@@ -209,6 +224,7 @@ enum RealESRGAN {
                 case .compact: try builder.compact(input)
                 case .rrdb: try builder.rrdb(input, scale: model.scale)
                 case .swinIR: try builder.swinIR(input, scale: model.scale, height: th, width: tw)
+                case .hat: try builder.hat(input, height: th, width: tw)
                 }
             }
             var y = try network(x)
@@ -473,65 +489,192 @@ enum RealESRGAN {
 
         /// One Swin transformer block: (shifted) 8×8 window attention and an MLP, each with a residual.
         private func swinBlock(_ x: MPSGraphTensor, _ name: String, dim: Int, height: Int, width: Int, shift: Int) throws -> MPSGraphTensor {
-            let ws = 8, n = ws * ws, windows = (height / ws) * (width / ws)
-            guard let table = weights[name + ".attn.relative_position_bias_table"] else { throw RealESRGAN.incomplete }
-            let heads = table.shape[1], headDim = dim / heads
+            let normed = graph.reshape(try layerNorm(x, name + ".norm1"), shape: [height, width, dim] as [NSNumber], name: nil)
+            let attention = try windowAttention(normed, name + ".attn", dim: dim, height: height, width: width, window: 8, shift: shift)
+            let attended = graph.addition(x, wide(attention), name: nil)
+            let mlp = try linear(gelu(try linear(try layerNorm(attended, name + ".norm2"), name + ".mlp.fc1")), name + ".mlp.fc2")
+            return graph.addition(attended, wide(mlp), name: nil)
+        }
 
-            var h = graph.reshape(try layerNorm(x, name + ".norm1"), shape: [height, width, dim] as [NSNumber], name: nil)
-            if shift > 0 { h = roll(h, -shift, height: height, width: width) }
-            // Partition into windows: [nW, 64, C].
+        /// (Shifted) window self-attention with a learned relative position bias, on an [H, W, C] image.
+        /// Returns tokens [H·W, C]. `name` is the attention module (`….attn`).
+        private func windowAttention(_ image: MPSGraphTensor, _ name: String, dim: Int, height: Int, width: Int,
+                                     window ws: Int, shift: Int) throws -> MPSGraphTensor {
+            let n = ws * ws, windows = (height / ws) * (width / ws)
+            guard let table = weights[name + ".relative_position_bias_table"] else { throw RealESRGAN.incomplete }
+            let heads = table.shape[1], headDim = dim / heads
+            var h = shift > 0 ? roll(image, -shift, height: height, width: width) : image
+            // Partition into windows: [nW, ws², C].
             h = graph.reshape(h, shape: [height / ws, ws, width / ws, ws, dim] as [NSNumber], name: nil)
             h = graph.transpose(h, permutation: [0, 2, 1, 3, 4], name: nil)
             h = graph.reshape(h, shape: [windows, n, dim] as [NSNumber], name: nil)
 
-            // Multi-head attention with the learned relative position bias (and the shifted-window mask).
-            var qkv = graph.reshape(try linear(h, name + ".attn.qkv"), shape: [windows, n, 3, heads, headDim] as [NSNumber], name: nil)
-            qkv = graph.transpose(qkv, permutation: [2, 0, 3, 1, 4], name: nil) // [3, nW, heads, 64, d]
+            var qkv = graph.reshape(try linear(h, name + ".qkv"), shape: [windows, n, 3, heads, headDim] as [NSNumber], name: nil)
+            qkv = graph.transpose(qkv, permutation: [2, 0, 3, 1, 4], name: nil) // [3, nW, heads, ws², d]
             func part(_ i: Int) -> MPSGraphTensor {
                 graph.reshape(graph.sliceTensor(qkv, dimension: 0, start: i, length: 1, name: nil),
                               shape: [windows, heads, n, headDim] as [NSNumber], name: nil)
             }
             let q = graph.multiplication(part(0), scalar(1 / Double(headDim).squareRoot()), name: nil)
             var attention = graph.matrixMultiplication(primary: q, secondary: graph.transposeTensor(part(1), dimension: 2, withDimension: 3, name: nil), name: nil)
-            attention = graph.addition(attention, positionBias(table.values, heads: heads), name: nil)
-            if shift > 0 { attention = graph.addition(attention, shiftMask(height: height, width: width, shift: shift), name: nil) }
+            attention = graph.addition(attention, positionBias(table.values, heads: heads, window: ws), name: nil)
+            if shift > 0 { attention = graph.addition(attention, shiftMask(height: height, width: width, window: ws, shift: shift), name: nil) }
             attention = graph.softMax(with: attention, axis: 3, name: nil)
-            var out = graph.matrixMultiplication(primary: attention, secondary: part(2), name: nil) // [nW, heads, 64, d]
+            var out = graph.matrixMultiplication(primary: attention, secondary: part(2), name: nil) // [nW, heads, ws², d]
             out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3], name: nil), shape: [windows, n, dim] as [NSNumber], name: nil)
-            out = try linear(out, name + ".attn.proj")
+            out = try linear(out, name + ".proj")
 
             // Merge windows back into the image and undo the shift.
             out = graph.reshape(out, shape: [height / ws, width / ws, ws, ws, dim] as [NSNumber], name: nil)
             out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3, 4], name: nil), shape: [height, width, dim] as [NSNumber], name: nil)
             if shift > 0 { out = roll(out, shift, height: height, width: width) }
-            let attended = graph.addition(x, wide(graph.reshape(out, shape: [height * width, dim] as [NSNumber], name: nil)), name: nil)
-
-            let mlp = try linear(gelu(try linear(try layerNorm(attended, name + ".norm2"), name + ".mlp.fc1")), name + ".mlp.fc2")
-            return graph.addition(attended, wide(mlp), name: nil)
+            return graph.reshape(out, shape: [height * width, dim] as [NSNumber], name: nil)
         }
 
-        /// The [heads, 64, 64] bias looked up from the relative position table (same index as SwinIR's buffer).
-        private func positionBias(_ table: [Float], heads: Int) -> MPSGraphTensor {
-            var bias = [Float](repeating: 0, count: heads * 64 * 64)
-            for i in 0..<64 {
-                for j in 0..<64 {
-                    let index = (i / 8 - j / 8 + 7) * 15 + (i % 8 - j % 8 + 7)
-                    for head in 0..<heads { bias[(head * 64 + i) * 64 + j] = table[index * heads + head] }
+        /// The [heads, ws², ws²] bias looked up from the relative position table (same index as SwinIR's/HAT's buffer).
+        private func positionBias(_ table: [Float], heads: Int, window ws: Int) -> MPSGraphTensor {
+            let n = ws * ws, side = 2 * ws - 1
+            var bias = [Float](repeating: 0, count: heads * n * n)
+            for i in 0..<n {
+                for j in 0..<n {
+                    let index = (i / ws - j / ws + ws - 1) * side + (i % ws - j % ws + ws - 1)
+                    for head in 0..<heads { bias[(head * n + i) * n + j] = table[index * heads + head] }
                 }
             }
-            return typed(bias, shape: [heads, 64, 64])
+            return typed(bias, shape: [heads, n, n])
         }
 
-        /// -100 between tokens that came from different image regions after the cyclic shift, else 0: [nW, 1, 64, 64].
-        private func shiftMask(height: Int, width: Int, shift: Int) -> MPSGraphTensor {
-            func region(_ v: Int, _ size: Int) -> Int { v < size - 8 ? 0 : v < size - shift ? 1 : 2 }
-            let columns = width / 8, windows = (height / 8) * columns
-            var mask = [Float](repeating: 0, count: windows * 64 * 64)
+        /// -100 between tokens that came from different image regions after the cyclic shift, else 0: [nW, 1, ws², ws²].
+        private func shiftMask(height: Int, width: Int, window ws: Int, shift: Int) -> MPSGraphTensor {
+            func region(_ v: Int, _ size: Int) -> Int { v < size - ws ? 0 : v < size - shift ? 1 : 2 }
+            let n = ws * ws, columns = width / ws, windows = (height / ws) * columns
+            var mask = [Float](repeating: 0, count: windows * n * n)
             for w in 0..<windows {
-                let ids = (0..<64).map { t in region((w / columns) * 8 + t / 8, height) * 3 + region((w % columns) * 8 + t % 8, width) }
-                for i in 0..<64 { for j in 0..<64 where ids[i] != ids[j] { mask[(w * 64 + i) * 64 + j] = -100 } }
+                let ids = (0..<n).map { t in region((w / columns) * ws + t / ws, height) * 3 + region((w % columns) * ws + t % ws, width) }
+                for i in 0..<n { for j in 0..<n where ids[i] != ids[j] { mask[(w * n + i) * n + j] = -100 } }
             }
-            return typed(mask, shape: [windows, 1, 64, 64])
+            return typed(mask, shape: [windows, 1, n, n])
+        }
+
+        // MARK: HAT
+
+        /// HAT for real-world SR (Apache-2.0, © Xiangyu Chen): residual hybrid attention groups — shifted 16×16
+        /// window attention plus a channel-attention conv branch in every block, and an overlapping
+        /// cross-attention block per group — then pixel-shuffle upsampling. Tiles are multiples of 16.
+        func hat(_ input: MPSGraphTensor, height: Int, width: Int) throws -> MPSGraphTensor {
+            let mean = graph.constant(Data([Float(0.4488), 0.4371, 0.4040].withUnsafeBufferPointer { Data(buffer: $0) }),
+                                      shape: [1, 1, 1, 3], dataType: .float32)
+            let meanTyped = dataType == .float32 ? mean : graph.cast(mean, to: dataType, name: "mean")
+            guard let dim = weights["conv_first.weight"]?.shape.first,
+                  let table = weights["layers.0.residual_group.blocks.0.attn.relative_position_bias_table"] else { throw RealESRGAN.incomplete }
+            let ws = (Int(Double(table.shape[0]).squareRoot()) + 1) / 2 // (2·ws − 1)² entries
+            let first = try conv(graph.subtraction(input, meanTyped, name: nil), "conv_first")
+            let tokens = height * width
+            // Float32 residual stream, half-precision maths (as for SwinIR).
+            var t = wide(try layerNorm(graph.reshape(first, shape: [tokens, dim] as [NSNumber], name: nil), "patch_embed.norm"))
+            var layer = 0
+            while weights["layers.\(layer).residual_group.blocks.0.norm1.weight"] != nil {
+                let start = t, group = "layers.\(layer).residual_group"
+                var block = 0
+                while weights["\(group).blocks.\(block).norm1.weight"] != nil {
+                    t = try hybridBlock(t, "\(group).blocks.\(block)", dim: dim, height: height, width: width, window: ws,
+                                        shift: block % 2 == 1 ? ws / 2 : 0)
+                    block += 1
+                }
+                t = try overlapCrossAttention(t, "\(group).overlap_attn", dim: dim, height: height, width: width, window: ws)
+                let image = graph.reshape(t, shape: [1, height, width, dim] as [NSNumber], name: nil)
+                let convolved = try conv(image, "layers.\(layer).conv", type: .float32)
+                t = graph.addition(graph.reshape(convolved, shape: [tokens, dim] as [NSNumber], name: nil), start, name: nil)
+                layer += 1
+            }
+            guard layer > 0 else { throw RealESRGAN.incomplete }
+            let body = graph.reshape(try layerNorm(t, "norm"), shape: [1, height, width, dim] as [NSNumber], name: nil)
+            var y = graph.addition(try conv(body, "conv_after_body"), first, name: nil)
+            y = lrelu(try conv(y, "conv_before_upsample.0"), 0.01) // PyTorch's default LeakyReLU slope here
+            var stage = 0
+            while weights["upsample.\(stage).weight"] != nil { // conv → pixel shuffle ×2, per doubling
+                y = graph.depth(toSpace2DTensor: try conv(y, "upsample.\(stage)"), widthAxis: 2, heightAxis: 1, depthAxis: 3,
+                                blockSize: 2, usePixelShuffleOrder: true, name: nil)
+                stage += 2
+            }
+            return graph.addition(try conv(y, "conv_last"), meanTyped, name: nil)
+        }
+
+        /// Hybrid attention block: window attention + 0.01 × a channel-attention conv branch, then an MLP.
+        private func hybridBlock(_ x: MPSGraphTensor, _ name: String, dim: Int, height: Int, width: Int,
+                                 window ws: Int, shift: Int) throws -> MPSGraphTensor {
+            let normed = graph.reshape(try layerNorm(x, name + ".norm1"), shape: [height, width, dim] as [NSNumber], name: nil)
+            // Conv branch (CAB): 3×3 conv → GELU → 3×3 conv, scaled per channel by a squeeze-and-excite gate.
+            let image = graph.reshape(normed, shape: [1, height, width, dim] as [NSNumber], name: nil)
+            let branch = try conv(gelu(try conv(image, name + ".conv_block.cab.0")), name + ".conv_block.cab.2")
+            var gate = graph.mean(of: branch, axes: [1, 2], name: nil)
+            gate = graph.reLU(with: try conv(gate, name + ".conv_block.cab.3.attention.1"), name: nil)
+            gate = graph.sigmoid(with: try conv(gate, name + ".conv_block.cab.3.attention.3"), name: nil)
+            let convX = graph.multiplication(graph.multiplication(branch, gate, name: nil), scalar(0.01), name: nil)
+
+            let attention = try windowAttention(normed, name + ".attn", dim: dim, height: height, width: width, window: ws, shift: shift)
+            var y = graph.addition(x, wide(attention), name: nil)
+            y = graph.addition(y, wide(graph.reshape(convX, shape: [height * width, dim] as [NSNumber], name: nil)), name: nil)
+            let mlp = try linear(gelu(try linear(try layerNorm(y, name + ".norm2"), name + ".mlp.fc1")), name + ".mlp.fc2")
+            return graph.addition(y, wide(mlp), name: nil)
+        }
+
+        /// Overlapping cross-attention: each ws×ws window of queries attends to the 1.5·ws window around it
+        /// (zero-padded at the edges), gathered with a precomputed index.
+        private func overlapCrossAttention(_ x: MPSGraphTensor, _ name: String, dim: Int, height: Int, width: Int,
+                                           window ws: Int) throws -> MPSGraphTensor {
+            guard let table = weights[name + ".relative_position_bias_table"] else { throw RealESRGAN.incomplete }
+            let heads = table.shape[1], headDim = dim / heads
+            let ow = ws + ws / 2, pad = (ow - ws) / 2, nq = ws * ws, nk = ow * ow
+            let columns = width / ws, windows = (height / ws) * columns, tokens = height * width
+            let qkv = try linear(try layerNorm(x, name + ".norm1"), name + ".qkv") // [N, 3C]: q | k | v
+            func channels(_ i: Int) -> MPSGraphTensor { graph.sliceTensor(qkv, dimension: 1, start: i * dim, length: dim, name: nil) }
+
+            // Queries: plain window partition.
+            var q = graph.reshape(channels(0), shape: [height / ws, ws, columns, ws, dim] as [NSNumber], name: nil)
+            q = graph.reshape(graph.transpose(q, permutation: [0, 2, 1, 3, 4], name: nil), shape: [windows, nq, heads, headDim] as [NSNumber], name: nil)
+            q = graph.multiplication(graph.transpose(q, permutation: [0, 2, 1, 3], name: nil), scalar(1 / Double(headDim).squareRoot()), name: nil)
+
+            // Keys and values: overlapping windows gathered by index; out-of-image positions read an appended zero row.
+            var index = [Int32](repeating: Int32(tokens), count: windows * nk)
+            for w in 0..<windows {
+                let y0 = (w / columns) * ws - pad, x0 = (w % columns) * ws - pad
+                for i in 0..<ow {
+                    for j in 0..<ow where (0..<height).contains(y0 + i) && (0..<width).contains(x0 + j) {
+                        index[w * nk + i * ow + j] = Int32((y0 + i) * width + x0 + j)
+                    }
+                }
+            }
+            let indices = graph.constant(index.withUnsafeBufferPointer { Data(buffer: $0) }, shape: [index.count as NSNumber], dataType: .int32)
+            func gathered(_ i: Int) -> MPSGraphTensor {
+                let padded = graph.concatTensors([channels(i), graph.constant(0, shape: [1, dim as NSNumber], dataType: dataType)], dimension: 0, name: nil)
+                let rows = graph.gather(withUpdatesTensor: padded, indicesTensor: indices, axis: 0, batchDimensions: 0, name: nil)
+                return graph.transpose(graph.reshape(rows, shape: [windows, nk, heads, headDim] as [NSNumber], name: nil), permutation: [0, 2, 1, 3], name: nil)
+            }
+            var attention = graph.matrixMultiplication(primary: q, secondary: graph.transposeTensor(gathered(1), dimension: 2, withDimension: 3, name: nil), name: nil)
+            attention = graph.addition(attention, overlapBias(table.values, heads: heads, window: ws, overlap: ow), name: nil)
+            attention = graph.softMax(with: attention, axis: 3, name: nil)
+            var out = graph.matrixMultiplication(primary: attention, secondary: gathered(2), name: nil) // [nW, heads, nq, d]
+            out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3], name: nil), shape: [height / ws, columns, ws, ws, dim] as [NSNumber], name: nil)
+            out = graph.reshape(graph.transpose(out, permutation: [0, 2, 1, 3, 4], name: nil), shape: [tokens, dim] as [NSNumber], name: nil)
+            let y = graph.addition(x, wide(try linear(out, name + ".proj")), name: nil)
+            let mlp = try linear(gelu(try linear(try layerNorm(y, name + ".norm2"), name + ".mlp.fc1")), name + ".mlp.fc2")
+            return graph.addition(y, wide(mlp), name: nil)
+        }
+
+        /// [heads, ws², ow²] bias for overlapping cross-attention, indexed exactly like HAT's `calculate_rpi_oca`
+        /// (whose offsets go negative and, as PyTorch indexing does, wrap around the table).
+        private func overlapBias(_ table: [Float], heads: Int, window ws: Int, overlap ow: Int) -> MPSGraphTensor {
+            let nq = ws * ws, nk = ow * ow, side = ws + ow - 1, size = side * side, offset = ws - ow + 1
+            var bias = [Float](repeating: 0, count: heads * nq * nk)
+            for i in 0..<nq {
+                for j in 0..<nk {
+                    var index = (j / ow - i / ws + offset) * side + (j % ow - i % ws + offset)
+                    if index < 0 { index += size }
+                    for head in 0..<heads { bias[(head * nq + i) * nk + j] = table[index * heads + head] }
+                }
+            }
+            return typed(bias, shape: [heads, nq, nk])
         }
 
         private func typed(_ values: [Float], shape: [Int]) -> MPSGraphTensor {
