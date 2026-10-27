@@ -20,6 +20,8 @@ final class MemoryCleaner: ObservableObject {
     @Published private(set) var apps: [AppUsage] = []
     @Published var selected: Set<pid_t> = []
     @Published private(set) var lastResult: String?
+    /// True while Clean Memory runs (it takes a few seconds).
+    @Published private(set) var isCleaning = false
     /// Called after the cache is cleared (the wallpaper reloads its video, which purge can leave blank).
     var onCacheCleared: (() -> Void)?
     private var timer: Timer?
@@ -89,22 +91,63 @@ final class MemoryCleaner: ObservableObject {
     /// Every other open app except Finder (which macOS keeps running).
     var otherApps: [AppUsage] { apps.filter { $0.app.bundleIdentifier != "com.apple.finder" } }
 
-    /// Clears the disk cache macOS keeps in RAM, using the system's `purge` tool (macOS asks for a password).
+    /// Frees memory macOS is holding but doesn't need, without closing anything (macOS asks for your password):
+    /// first it briefly signals "memory is getting tight" (simulated — no real pressure) so apps and system
+    /// services drop their caches, then `purge` empties the file cache.
+    /// Runs in the background; afterwards the window you were in comes back to the front, because the
+    /// password prompt is another app and Stage Manager would otherwise leave this window off stage.
     func cleanCache() {
-        let before = SystemInfo.freeMemory()
-        var error: NSDictionary?
-        NSAppleScript(source: "do shell script \"/usr/sbin/purge\" with administrator privileges with prompt \"LiveWallpaper needs your password to clear macOS's memory cache.\"")?
-            .executeAndReturnError(&error)
-        if let error {
-            lastResult = (error[NSAppleScript.errorNumber] as? Int) == -128 ? nil : "Couldn't clear the cache: \(error[NSAppleScript.errorMessage] as? String ?? "unknown error")"
+        guard !isCleaning else { return }
+        isCleaning = true
+        lastResult = nil
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        let freeBefore = SystemInfo.freeMemory(), usedBefore = used
+        let script = Self.testCleanCommand ?? """
+            do shell script "/usr/bin/memory_pressure -S -l warn -s 4 >/dev/null 2>&1; /usr/sbin/purge" \
+            with administrator privileges with prompt "LiveWallpaper needs your password to free up memory macOS is holding but not using. Nothing will be closed."
+            """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script] // fixed script, no user input
+        let errors = Pipe()
+        process.standardError = errors
+        process.standardOutput = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] p in
+            let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let status = p.terminationStatus
+            Task { @MainActor in self?.finishCleaning(status: status, message: message, window: window, freeBefore: freeBefore, usedBefore: usedBefore) }
+        }
+        do { try process.run() } catch {
+            isCleaning = false
+            lastResult = "Couldn't start cleaning: \(error.localizedDescription)"
+        }
+    }
+
+    /// For testing the flow without a password prompt (`LW_TEST_CLEAN_SCRIPT` holds an AppleScript).
+    private static let testCleanCommand = ProcessInfo.processInfo.environment["LW_TEST_CLEAN_SCRIPT"]
+
+    private func finishCleaning(status: Int32, message: String, window: NSWindow?, freeBefore: Int64, usedBefore: Int64) {
+        isCleaning = false
+        // Bring back the window you were in (the password prompt took focus).
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+        guard status == 0 else {
+            // -128 = you clicked Cancel in the password prompt.
+            lastResult = message.contains("-128") ? nil : "Couldn't clean memory: \(message.trimmingCharacters(in: .whitespacesAndNewlines))"
             return
         }
-        let after = SystemInfo.freeMemory()
+        let freeAfter = SystemInfo.freeMemory()
         refresh()
         onCacheCleared?()
-        Logger(subsystem: "LiveWallpaper", category: "memory").notice("purge done: free \(before) -> \(after) bytes")
-        // purge turns cached files into truly free memory, so report the change in free memory.
-        lastResult = "Cleared macOS's file cache — free memory went from \(SystemInfo.bytes(before)) to \(SystemInfo.bytes(after))."
+        let released = max(usedBefore - used, 0)
+        Logger(subsystem: "LiveWallpaper", category: "memory").notice("clean done: free \(freeBefore) -> \(freeAfter), used \(usedBefore) -> \(self.used)")
+        if freeAfter > freeBefore + 50_000_000 || released > 50_000_000 {
+            lastResult = "Cleaned up: free memory went from \(SystemInfo.bytes(freeBefore)) to \(SystemInfo.bytes(freeAfter))"
+                + (released > 50_000_000 ? ", and apps released \(SystemInfo.bytes(released)) of caches." : ".")
+                + " Nothing was closed."
+        } else {
+            lastResult = "Cleaned up — macOS wasn't holding much it didn't need, so there was little to free. Nothing was closed."
+        }
     }
 
     /// Every process's executable path and memory footprint.
@@ -181,9 +224,18 @@ struct MemoryView: View {
 
             HStack {
                 Text("Apps using memory").font(.headline)
-                InfoButton("Open apps, biggest first, including their helper processes. Tick apps and Quit Selected to close them (each can still ask to save). Clean Memory clears macOS's file cache without closing anything; it asks for your password.")
+                InfoButton("Open apps, biggest first, including their helper processes. Tick apps and Quit Selected to close them (each can still ask to save). Clean Memory frees memory macOS is holding but not using — it has apps and system services drop their caches and empties the file cache — without closing anything or this window. It asks for your password.")
                 Spacer()
-                Button("Clean Memory…") { cleaner.cleanCache() }
+                Button {
+                    cleaner.cleanCache()
+                } label: {
+                    if cleaner.isCleaning {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Cleaning…") }
+                    } else {
+                        Text("Clean Memory…")
+                    }
+                }
+                .disabled(cleaner.isCleaning)
                     .help("Clears macOS's file cache from RAM (asks for your password). Doesn't close anything.")
                 Button("Quit All Other Apps…") { cleaner.quit(cleaner.otherApps) }
                     .help("Asks first; apps with unsaved work will ask you to save")

@@ -95,9 +95,9 @@ final class AppModel: ObservableObject {
     init() {
         gate.onChange = { [unowned self] in objectWillChange.send() }
         memory.onCacheCleared = { [unowned self] in
-            // Reload the wallpaper so it isn't left blank after macOS drops its cached frames.
-            windows.forEach { $0.load(nil) }
-            loadCurrent()
+            // Reload the wallpaper in place so it isn't left blank after macOS drops its cached frames.
+            windows.forEach { $0.reload() }
+            gate.apply()
         }
         studio.onFinished = { [unowned self] method in modelUsed(method) }
         library.onChange = { [unowned self] in

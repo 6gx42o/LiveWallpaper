@@ -19,7 +19,7 @@ final class WallpaperWindow: NSWindow {
     private var looper: AVPlayerLooper?
     private var statusObservation: NSKeyValueObservation?
     /// What's loaded, so identical reloads are skipped.
-    private var loaded: (url: URL, edits: Edits, size: CGSize?)?
+    private var loaded: (url: URL, edits: Edits, size: CGSize?, duration: Double)?
     /// Called when the video can't be played (damaged file, unsupported codec…).
     var onFailure: ((URL) -> Void)?
 
@@ -57,6 +57,19 @@ final class WallpaperWindow: NSWindow {
         setFrame(screen.frame, display: false)
     }
 
+    /// Reloads the current video in place (after a memory clean dropped its cached frames), without
+    /// ordering the window out and back in.
+    func reload() {
+        guard let loaded else { return }
+        self.loaded = nil
+        player.pause()
+        statusObservation = nil
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+        load(loaded.url, edits: loaded.edits, size: loaded.size, duration: loaded.duration)
+    }
+
     /// Plays `url` with `edits` (trim, speed, framing). `size` is the video's pixel size, if known.
     func load(_ url: URL?, edits: Edits = Edits(), size: CGSize? = nil, duration: Double = 0) {
         if let loaded, loaded.url == url, loaded.edits == edits, loaded.size == size { return }
@@ -79,8 +92,8 @@ final class WallpaperWindow: NSWindow {
             Task { @MainActor in self?.onFailure?(url) }
         }
         self.looper = looper
-        loaded = (url, edits, size)
-        orderFront(nil)
+        loaded = (url, edits, size, duration)
+        if !isVisible { orderFront(nil) }
     }
 
     private func layout(size: CGSize?, edits: Edits) {
