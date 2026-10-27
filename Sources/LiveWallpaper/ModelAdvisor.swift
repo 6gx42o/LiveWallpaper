@@ -46,6 +46,7 @@ enum ModelAdvisor {
         case .swinIRMedium2x: (14.5, 2_000_000_000, 16)
         case .swinIRMedium: (14.8, 2_400_000_000, 16)
         case .swinIRLarge, .swinIRLargeSmooth: (29.5, 3_400_000_000, 32)
+        case .swinIRLargeEnsemble: (59.0, 6_800_000_000, 96)
         case .appleSuperResolution, .basic: nil
         }
     }
@@ -60,6 +61,7 @@ enum ModelAdvisor {
         case .realESRGANLarge2x, .realESRGANLarge, .realESRNetLarge: 4
         case .swinIRMedium2x, .swinIRMedium: 5
         case .swinIRLarge, .swinIRLargeSmooth: 6
+        case .swinIRLargeEnsemble: 7
         }
     }
 
@@ -100,6 +102,7 @@ enum ModelAdvisor {
         case .swinIRMedium2x, .swinIRMedium: "Very slow"
         case .swinIRLarge: "Slowest, sharpest"
         case .swinIRLargeSmooth: "Slowest"
+        case .swinIRLargeEnsemble: "Biggest Macs only"
         }
     }
 

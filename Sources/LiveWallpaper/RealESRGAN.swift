@@ -22,6 +22,8 @@ enum RealESRGAN {
         let scale: Int
         /// Largest source it takes (longest side × shortest side).
         let maxInput: CGSize
+        /// 2 = self-ensemble: also run a mirrored copy of each tile and average the two (same weights).
+        var passes = 1
 
         var fileURL: URL { RealESRGAN.modelsDir.appending(path: file) }
         var isDownloaded: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
@@ -92,6 +94,14 @@ enum RealESRGAN {
         url: URL(string: "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_PSNR.pth")!,
         downloadSize: 142_473_947, sha256: "450be6eac63a59959b55a83df6743444de9f018547f81d16f699b3680d366ad7",
         architecture: .swinIR, scale: 4, maxInput: CGSize(width: 1920, height: 1080))
+
+    /// SwinIR Large run twice per tile (as is and mirrored) and averaged: steadier detail and fewer GAN
+    /// artefacts, for twice the time and memory. Uses SwinIR Large's own weights file.
+    static let swinLargeEnsemble: Model = {
+        var model = swinLarge
+        model.passes = 2
+        return model
+    }()
 
     static let modelsDir: URL = {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -193,10 +203,19 @@ enum RealESRGAN {
             input = graph.placeholder(shape: [1, tileHeight, tileWidth, 3] as [NSNumber], dataType: .float32, name: "input")
             let builder = Builder(graph: graph, weights: weights, dataType: dataType)
             let x = fullPrecision ? input : graph.cast(input, to: .float16, name: "in16")
-            var y = switch model.architecture {
-            case .compact: try builder.compact(x)
-            case .rrdb: try builder.rrdb(x, scale: model.scale)
-            case .swinIR: try builder.swinIR(x, scale: model.scale, height: tileHeight, width: tileWidth)
+            let (th, tw) = (tileHeight, tileWidth)
+            func network(_ input: MPSGraphTensor) throws -> MPSGraphTensor {
+                switch model.architecture {
+                case .compact: try builder.compact(input)
+                case .rrdb: try builder.rrdb(input, scale: model.scale)
+                case .swinIR: try builder.swinIR(input, scale: model.scale, height: th, width: tw)
+                }
+            }
+            var y = try network(x)
+            if model.passes == 2 {
+                // Self-ensemble: the left-right mirror of the tile, upscaled and mirrored back, averaged in.
+                let mirrored = graph.reverse(try network(graph.reverse(x, axes: [2], name: nil)), axes: [2], name: nil)
+                y = graph.multiplication(graph.addition(y, mirrored, name: nil), builder.scalar(0.5), name: nil)
             }
             y = graph.clamp(y, min: builder.scalar(0), max: builder.scalar(1), name: nil)
             output = fullPrecision ? y : graph.cast(y, to: .float32, name: "out32")

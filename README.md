@@ -10,7 +10,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Separate home and lock screen wallpapers.** The home screen plays the video; the lock screen shows a still frame you pick (see below for why).
 - **Quality check.** Every video is compared with your display: you're told if it's low resolution, the wrong aspect ratio (and how much gets cropped), low bitrate or low frame rate.
 - **Upscaling, with models only when you ask.** Nothing is bundled with the app. Each model downloads only when you press **Download** (Settings or the Upscale tab) or **Upscale** (after asking), with a progress bar showing size downloaded, time left and time elapsed. Engines:
-  - **Ten downloadable models, small to very large** — official Real-ESRGAN (BSD-3) and SwinIR (Apache-2.0) weights, SHA-256-pinned, stored in LiveWallpaper's own folder and run on the GPU (Metal Performance Shaders Graph, half precision with a float32 residual stream where needed, in tiles so memory stays bounded). Every network is checked against PyTorch: outputs match within 1–3 levels out of 255. After each upscale you're asked whether to keep or delete the model; every model has **Delete…**.
+  - **Eleven models, small to very large** — official Real-ESRGAN (BSD-3) and SwinIR (Apache-2.0) weights, SHA-256-pinned, stored in LiveWallpaper's own folder and run on the GPU (Metal Performance Shaders Graph, half precision with a float32 residual stream where needed, in tiles so memory stays bounded). Every network is checked against PyTorch: outputs match within 1–3 levels out of 255. After each upscale you're asked whether to keep or delete the model; every model has **Delete…**.
 
     | Model | Weights | Best for | Seconds per 1080p frame on an M5 (10-core GPU) | Needs |
     |---|---|---|---|---|
@@ -23,11 +23,12 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
     | SwinIR Medium 2× / 4× | 67 MB | transformer detail; Pro chips | ~30 | 16 GB |
     | SwinIR Large 4× | 142 MB | the most detail; Max and Ultra chips | ~61 | 32 GB |
     | SwinIR Large 4× Smooth | 142 MB | the same transformer, fewer invented details | ~61 | 32 GB |
+    | SwinIR Large 4× Ensemble | (SwinIR Large's file) | the biggest Macs: each frame upscaled as is and mirrored, averaged — steadier detail | ~122 | 96 GB |
 
   - **Three picks for your Mac.** Worked out from your GPU core count, memory and the video:
     - **Recommended for speed** — the sharpest model that's still quick on your Mac (~1.5 s a frame or less). It's a balance, not just the fastest: a 24 GB Pro gets Large 2× where an 8 GB Air gets Medium.
     - **Recommended for quality** — the best results within a reasonable time (~15 s a frame).
-    - **Max for this Mac** — the biggest model it can handle: Large 2× on 8–16 GB Macs, SwinIR Medium from 16 GB with a fast enough GPU, SwinIR Large from 32 GB (Max and Ultra chips). Anything beyond is **greyed out** with the reason (not enough memory, or it would take over 30 s a frame). On 64 GB+ Macs, Automatic work size also uses bigger tiles (2× at 64 GB, 4× at 128 GB and up).
+    - **Max for this Mac** — the biggest model it can handle: Large 2× on 8–16 GB Macs, SwinIR Medium from 16 GB with a fast enough GPU, SwinIR Large from 32 GB (Max and Ultra chips), and SwinIR Large Ensemble on 96 GB+ Macs fast enough to run it. Anything beyond is **greyed out** with the reason (not enough memory, or it would take over 30 s a frame). On 64 GB+ Macs, Automatic work size also uses bigger tiles (2× at 64 GB, 4× at 128 GB and up).
   - **Apple Super Resolution** — Apple's on-device model (macOS 26+). macOS downloads and manages it; it's protected by System Integrity Protection, so no app can delete it.
   - **Basic** — Lanczos scaling, no download.
 - **Advice for your Mac.** Each model shows how much RAM it needs for the video, roughly how long each frame takes on your GPU, whether it runs on your chip, why not if it can't (too much RAM, unsupported chip/macOS/resolution), and which one is **Recommended** for your chip and memory.
