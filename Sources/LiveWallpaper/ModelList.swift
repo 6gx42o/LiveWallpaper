@@ -118,7 +118,7 @@ struct ModelList: View {
     /// ", about 1.3 s per frame on this Mac" for GPU models.
     private func speedText(_ engine: Upscaler.Engine) -> String {
         guard let seconds = ModelAdvisor.secondsPerFrame(engine, input: input) else { return "" }
-        return seconds < 1
+        return seconds <= 0.5
             ? ", about \(Int((1 / seconds).rounded())) frames a second on this Mac"
             : ", about \(String(format: "%.1f", seconds)) s per frame on this Mac"
     }
