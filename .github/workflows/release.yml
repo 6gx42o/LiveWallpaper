@@ -27,11 +27,38 @@ jobs:
           lipo LiveWallpaper.app/Contents/MacOS/LiveWallpaper -verify_arch arm64
           lipo LiveWallpaper.app/Contents/MacOS/LiveWallpaper -verify_arch x86_64
       - name: Package
-        run: ditto -c -k --keepParent LiveWallpaper.app LiveWallpaper.zip
+        run: |
+          # The zip is what installed copies update from; the disk image and installer are for first installs.
+          ditto -c -k --keepParent LiveWallpaper.app LiveWallpaper.zip
+
+          # Disk image: drag the app onto the Applications shortcut. hdiutil is sometimes "busy" on CI, so retry.
+          mkdir dmg && cp -R LiveWallpaper.app dmg/ && ln -s /Applications dmg/Applications
+          for attempt in 1 2 3; do
+            hdiutil create -volname LiveWallpaper -srcfolder dmg -fs HFS+ -format UDZO -ov LiveWallpaper.dmg && break
+            sleep 5
+          done
+          test -f LiveWallpaper.dmg
+
+          # Installer: always into /Applications (not relocatable, so it never lands on a copy elsewhere).
+          # Afterwards the app belongs to the logged-in user, like one dragged from the disk image,
+          # so the in-app updater can replace it.
+          mkdir -p pkgroot scripts && cp -R LiveWallpaper.app pkgroot/
+          cat > scripts/postinstall <<'SH'
+          #!/bin/sh
+          chown -R "$(stat -f %Su /dev/console)" "$2/LiveWallpaper.app"
+          SH
+          chmod +x scripts/postinstall
+          pkgbuild --analyze --root pkgroot component.plist
+          plutil -replace 0.BundleIsRelocatable -bool NO component.plist
+          pkgbuild --root pkgroot --component-plist component.plist --scripts scripts \
+            --install-location /Applications --identifier com.rushilluthra.LiveWallpaper \
+            --version "1.${{ github.run_number }}" LiveWallpaper.pkg
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v1.${{ github.run_number }}" LiveWallpaper.zip \
+          gh release create "v1.${{ github.run_number }}" LiveWallpaper.dmg LiveWallpaper.pkg LiveWallpaper.zip \
             --title "LiveWallpaper 1.${{ github.run_number }}" \
-            --notes "$(git log -1 --pretty=%B)"
+            --notes "$(git log -1 --pretty=%B)
+
+          **Install:** download **LiveWallpaper.dmg** and drag the app to Applications, or run **LiveWallpaper.pkg**. They aren't notarized, so the first time macOS asks, open System Settings › Privacy & Security and click **Open Anyway**. Already installed? Use **Check Now** in Settings › Updates instead."

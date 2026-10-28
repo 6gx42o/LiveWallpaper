@@ -104,7 +104,7 @@ open LiveWallpaper.app
 
 ### Releases
 
-Every push to `main` that changes the app runs [`.github/workflows/release.yml`](.github/workflows/release.yml): it builds on a macOS runner with version `1.<run number>`, zips the app and publishes a GitHub release. Installed copies pick it up through the updater above. (Local builds are version 1.0, so they update to the next release too.)
+Every push to `main` that changes the app runs [`.github/workflows/release.yml`](.github/workflows/release.yml): it builds on a macOS runner with version `1.<run number>`, publishes a GitHub release with a disk image (`LiveWallpaper.dmg`, drag to Applications), an installer (`LiveWallpaper.pkg`, installs into /Applications) and a zip the updater uses. They're ad-hoc signed, not notarized: the first time, macOS asks you to allow it in System Settings › Privacy & Security › **Open Anyway**. Installed copies pick it up through the updater above. (Local builds are version 1.0, so they update to the next release too.)
 
 ## Usage
 
