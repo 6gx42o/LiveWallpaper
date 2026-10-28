@@ -42,15 +42,15 @@ jobs:
           # Installer: always into /Applications (not relocatable, so it never lands on a copy elsewhere).
           # Afterwards the app belongs to the logged-in user, like one dragged from the disk image,
           # so the in-app updater can replace it.
-          mkdir -p pkgroot scripts && cp -R LiveWallpaper.app pkgroot/
-          cat > scripts/postinstall <<'SH'
+          mkdir -p pkgroot pkgscripts && cp -R LiveWallpaper.app pkgroot/
+          cat > pkgscripts/postinstall <<'SH'
           #!/bin/sh
           chown -R "$(stat -f %Su /dev/console)" "$2/LiveWallpaper.app"
           SH
-          chmod +x scripts/postinstall
+          chmod +x pkgscripts/postinstall
           pkgbuild --analyze --root pkgroot component.plist
           plutil -replace 0.BundleIsRelocatable -bool NO component.plist
-          pkgbuild --root pkgroot --component-plist component.plist --scripts scripts \
+          pkgbuild --root pkgroot --component-plist component.plist --scripts pkgscripts \
             --install-location /Applications --identifier com.rushilluthra.LiveWallpaper \
             --version "1.${{ github.run_number }}" LiveWallpaper.pkg
       - name: Publish release
