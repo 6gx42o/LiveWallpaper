@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     private var appliedRotation: Int?
     private var rotationTimer: Timer?
     var openWindow: (() -> Void)?
+    /// Shows the Photos picker (the app delegate owns the window it appears on).
+    var addFromPhotos: (() -> Void)?
     /// True while files are being dragged over a drop area (highlights it).
     var isDropTargeted = false { didSet { objectWillChange.send() } }
     /// The open video editor, if any.

@@ -85,6 +85,8 @@ struct WindowView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             switch model.tab {
             case .wallpapers:
+                Button { model.addFromPhotos?() } label: { Label("Photos", systemImage: "photo.on.rectangle.angled") }
+                    .help("Add videos or Live Photos from your Photos library (⇧⌘P)")
                 Button { model.addFromYouTube() } label: { Label("YouTube", systemImage: "play.rectangle") }
                     .help("Add a wallpaper from a YouTube link (⌘L)")
                 Button { model.startScan() } label: { Label("Find Videos", systemImage: "magnifyingglass") }

@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
     private lazy var model = AppModel()
+    private lazy var photos = PhotosImport(library: model.library)
     private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.contentViewController = host
         popover.behavior = .transient
         model.openWindow = { [unowned self] in showMainWindow() }
+        model.addFromPhotos = { [unowned self] in addFromPhotos() }
         NSApp.mainMenu = makeMainMenu()
 
         // First run: nothing to show yet, so open the window instead of leaving only a menu bar icon.
@@ -99,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Add Video…", action: #selector(addVideos), keyEquivalent: "o")
         fileMenu.addItem(withTitle: "Add from YouTube…", action: #selector(addFromYouTube), keyEquivalent: "l")
+        fileMenu.addItem(withTitle: "Add from Photos…", action: #selector(addFromPhotos), keyEquivalent: "P") // ⇧⌘P
         fileMenu.addItem(withTitle: "Find Videos on This Mac…", action: #selector(findVideos), keyEquivalent: "F") // ⇧⌘F
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -132,6 +135,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc private func addFromYouTube() { model.tab = .wallpapers; model.addFromYouTube() }
     @objc private func findVideos() { model.tab = .wallpapers; model.startScan() }
+    @objc private func addFromPhotos() {
+        model.tab = .wallpapers
+        showMainWindow()
+        // After the window is up (showMainWindow activates on the next run loop pass).
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let host = mainWindow?.contentViewController else { return }
+            photos.present(from: host)
+        }
+    }
     @objc private func togglePause() { model.gate.userPaused.toggle() }
     @objc private func nextWallpaper() { model.nextWallpaper() }
     @objc private func checkForUpdates() {
