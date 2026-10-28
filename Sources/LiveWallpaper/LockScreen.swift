@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 import os
@@ -24,7 +25,12 @@ enum LockScreen {
         generator.requestedTimeToleranceAfter = .zero
         let (frame, _) = try await generator.image(at: CMTime(seconds: edits.lockFrame, preferredTimescale: 600))
         let crop = edits.cropRect(image: CGSize(width: frame.width, height: frame.height), display: Display.pixelSize)
-        let still = frame.cropping(to: crop) ?? frame
+        var still = frame.cropping(to: crop) ?? frame
+        // The lock screen gets the same look as the wallpaper.
+        if !edits.lookOrNeutral.isNeutral,
+           let adjusted = CIContext().createCGImage(edits.lookOrNeutral.apply(to: CIImage(cgImage: still)), from: CGRect(x: 0, y: 0, width: still.width, height: still.height)) {
+            still = adjusted
+        }
 
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // A new file name each time, otherwise macOS keeps showing its cached copy.

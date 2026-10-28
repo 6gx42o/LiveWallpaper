@@ -96,6 +96,10 @@ struct Edits: Codable, Equatable {
     var speed = 1.0
     /// Seconds into the video used for the lock screen still.
     var lockFrame = 0.0
+    /// Colour/finish adjustments (nil = none). Optional so older saved edits still load.
+    var look: Look?
+    /// Seamless-loop cross-fade length in seconds (nil/0 = off).
+    var loopFade: Double?
 
     var isTrimmed: Bool { trimStart > 0 || trimEnd != nil }
 

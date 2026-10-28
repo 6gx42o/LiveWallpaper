@@ -22,6 +22,8 @@ final class Library {
 
     private enum Job {
         case importFile(URL)
+        /// Render a wallpaper's look / seamless loop into its baked copy.
+        case bake(URL)
         case upscale(URL, allowModelDownload: Bool)
         /// A link dragged in from a browser (image, GIF or video file).
         case download(URL)
@@ -143,7 +145,65 @@ final class Library {
     func setEdits(_ edits: Edits, for url: URL) {
         allEdits[url.lastPathComponent] = edits == Edits() ? nil : edits
         saveEdits()
+        if edits.needsBake {
+            if bakedKeys[url.lastPathComponent] != edits.bakeKey { queue.append(.bake(url)); next() }
+        } else {
+            removeBaked(url)
+        }
         onChange?()
+    }
+
+    // MARK: Baked copies (look + seamless loop)
+
+    /// Rendered copies live here, out of the library list.
+    private var bakedDir: URL { dir.appending(path: "Baked", directoryHint: .isDirectory) }
+    private func bakedURL(_ url: URL) -> URL { bakedDir.appending(path: url.lastPathComponent) }
+    /// What each baked copy was made from.
+    private var bakedKeys: [String: BakeKey] = {
+        guard let data = UserDefaults.standard.data(forKey: "baked") else { return [:] }
+        return (try? JSONDecoder().decode([String: BakeKey].self, from: data)) ?? [:]
+    }() { didSet { UserDefaults.standard.set(try? JSONEncoder().encode(bakedKeys), forKey: "baked") } }
+
+    /// The file to play and the edits to play it with: the baked copy (already trimmed) when it's current.
+    func playbackSource(for url: URL) -> (url: URL, edits: Edits) {
+        let edits = edits(for: url)
+        guard edits.needsBake, bakedKeys[url.lastPathComponent] == edits.bakeKey,
+              FileManager.default.fileExists(atPath: bakedURL(url).path) else { return (url, edits) }
+        var played = edits
+        played.trimStart = 0
+        played.trimEnd = nil
+        return (bakedURL(url), played)
+    }
+
+    private func removeBaked(_ url: URL) {
+        try? FileManager.default.removeItem(at: bakedURL(url))
+        bakedKeys[url.lastPathComponent] = nil
+    }
+
+    private func runBake(_ url: URL) {
+        let edits = edits(for: url)
+        guard edits.needsBake, FileManager.default.fileExists(atPath: url.path) else { return next() }
+        busy = true
+        let name = url.deletingPathExtension().lastPathComponent
+        let title = edits.loopFadeSeconds > 0 ? "Making “\(name)” loop seamlessly" : "Applying the look to “\(name)”"
+        setProgress(title, 0)
+        currentTask = Task {
+            do {
+                try FileManager.default.createDirectory(at: bakedDir, withIntermediateDirectories: true)
+                let tmp = bakedDir.appending(path: UUID().uuidString + Self.tmpSuffix)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                try await Baker.bake(url, edits: edits, to: tmp) { self.setProgress(title, $0) }
+                try? FileManager.default.removeItem(at: bakedURL(url))
+                try FileManager.default.moveItem(at: tmp, to: bakedURL(url))
+                bakedKeys[url.lastPathComponent] = edits.bakeKey
+                log.notice("baked \(url.lastPathComponent, privacy: .public)")
+            } catch {
+                log.error("bake failed \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                notices.append(Notice(title: "Couldn't finish “\(name)”", reason: Task.isCancelled ? "Cancelled — it plays without the look and loop until you save again."
+                                      : "Its look or seamless loop couldn't be rendered, so it plays without them.", details: error.localizedDescription))
+            }
+            finishJob()
+        }
     }
 
     private func saveEdits() {
@@ -201,6 +261,7 @@ final class Library {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         allEdits[url.lastPathComponent] = nil
         saveEdits()
+        removeBaked(url)
         if favorites.remove(url.lastPathComponent) != nil { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favorites") }
         reload()
     }
@@ -258,6 +319,7 @@ final class Library {
         case .upscale(let url, let allowModelDownload): runUpscale(url, allowModelDownload: allowModelDownload)
         case .download(let url): runDownload(url)
         case .youtube(let url): runYouTube(url)
+        case .bake(let url): runBake(url)
         }
     }
 

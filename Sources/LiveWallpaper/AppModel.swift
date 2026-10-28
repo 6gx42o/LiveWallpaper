@@ -574,7 +574,9 @@ final class AppModel: ObservableObject {
         for window in windows {
             let url = wallpaper(forDisplay: window.displayUUID)
             let info = url.flatMap { library.infos[$0] }
-            window.load(url, edits: url.map(library.edits(for:)) ?? Edits(), size: info?.size, duration: info?.duration ?? 0)
+            // The baked copy (look, seamless loop) when it's ready, otherwise the original with its edits.
+            let source = url.map(library.playbackSource(for:))
+            window.load(source?.url, edits: source?.edits ?? Edits(), size: info?.size, duration: info?.duration ?? 0)
         }
         gate.apply()
     }

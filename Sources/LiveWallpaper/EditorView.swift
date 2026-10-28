@@ -9,6 +9,8 @@ final class EditorModel: ObservableObject {
     @Published var edits: Edits
     let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
+    /// Bumped on every restart so a slow look preview can't replace a newer one.
+    private var generation = 0
     /// Pausing on the lock screen frame.
     @Published private(set) var showingLockFrame = false
 
@@ -24,16 +26,27 @@ final class EditorModel: ObservableObject {
     var name: String { url.deletingPathExtension().lastPathComponent }
     var trimEnd: Double { edits.trimEnd ?? info.duration }
 
-    /// Re-applies trim and speed to the preview and plays it.
+    /// Re-applies trim, speed and the look to the preview and plays it.
     func restartPreview() {
         showingLockFrame = false
-        looper?.disableLooping()
-        player.removeAllItems()
-        let item = AVPlayerItem(url: url)
-        looper = edits.timeRange(duration: info.duration).map { AVPlayerLooper(player: player, templateItem: item, timeRange: $0) }
-            ?? AVPlayerLooper(player: player, templateItem: item)
-        player.defaultRate = Float(edits.speed)
-        player.play()
+        generation += 1
+        let mine = generation, look = edits.lookOrNeutral
+        Task {
+            let item = AVPlayerItem(url: url)
+            if !look.isNeutral {
+                // The same Core Image adjustments the bake uses, applied live while editing.
+                item.videoComposition = try? await AVMutableVideoComposition.videoComposition(with: AVURLAsset(url: url)) { request in
+                    request.finish(with: look.apply(to: request.sourceImage), context: nil)
+                }
+            }
+            guard mine == generation else { return }
+            looper?.disableLooping()
+            player.removeAllItems()
+            looper = edits.timeRange(duration: info.duration).map { AVPlayerLooper(player: player, templateItem: item, timeRange: $0) }
+                ?? AVPlayerLooper(player: player, templateItem: item)
+            player.defaultRate = Float(edits.speed)
+            player.play()
+        }
     }
 
     /// Freezes the preview on the chosen lock screen frame.
@@ -184,6 +197,8 @@ struct EditorView: View {
                 }
             }
 
+            look
+
             quality
 
             HStack {
@@ -197,6 +212,60 @@ struct EditorView: View {
         }
         .padding(20)
         .frame(width: 760)
+    }
+
+    /// Colour, softness, vignette and the seamless loop — previewed live, baked once when you save.
+    private var look: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                Text("Look").font(.subheadline.weight(.semibold))
+                InfoButton("Adjust brightness, contrast, colour, warmth, softness and a vignette. The preview updates when you let go of a slider. When you save, the look is rendered into the wallpaper once, so playing it costs no extra battery; the original is kept, so you can change it any time.")
+                Spacer()
+                if !editor.edits.lookOrNeutral.isNeutral {
+                    Button("Reset Look") { editor.edits.look = nil; editor.restartPreview() }.controlSize(.small)
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow {
+                    lookSlider("Brightness", \.brightness, -0.5...0.5)
+                    lookSlider("Contrast", \.contrast, 0.5...1.5)
+                }
+                GridRow {
+                    lookSlider("Saturation", \.saturation, 0...2)
+                    lookSlider("Warmth", \.warmth, -1...1)
+                }
+                GridRow {
+                    lookSlider("Soft focus", \.blur, 0...1)
+                    lookSlider("Vignette", \.vignette, 0...1)
+                }
+            }
+            HStack(spacing: 8) {
+                Text("Seamless loop").foregroundStyle(.secondary)
+                InfoButton("If the video jumps when it starts over, this cross-fades its end into its beginning so the loop is invisible. The video becomes this much shorter. It's rendered when you save.")
+                Picker("Seamless loop", selection: Binding(get: { editor.edits.loopFade ?? 0 }, set: { editor.edits.loopFade = $0 > 0 ? $0 : nil })) {
+                    Text("Off").tag(0.0)
+                    Text("0.5 s").tag(0.5)
+                    Text("1 s").tag(1.0)
+                    Text("2 s").tag(2.0)
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 240)
+                if editor.edits.needsBake {
+                    Text("Rendered when you save").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func lookSlider(_ title: String, _ keyPath: WritableKeyPath<Look, Double>, _ range: ClosedRange<Double>) -> some View {
+        HStack(spacing: 6) {
+            Text(title).foregroundStyle(.secondary).frame(width: 74, alignment: .leading)
+            Slider(value: Binding(get: { editor.edits.lookOrNeutral[keyPath: keyPath] },
+                                  set: { var look = editor.edits.lookOrNeutral; look[keyPath: keyPath] = $0; editor.edits.look = look.isNeutral ? nil : look }),
+                   in: range) { editing in if !editing { editor.restartPreview() } }
+        }
     }
 
     private var quality: some View {
