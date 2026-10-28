@@ -105,6 +105,41 @@ final class Library {
 
     func edits(for url: URL) -> Edits { allEdits[url.lastPathComponent] ?? Edits() }
 
+    // MARK: Favorites, search and sorting
+
+    /// Starred wallpapers, by file name.
+    private(set) var favorites: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
+
+    func isFavorite(_ url: URL) -> Bool { favorites.contains(url.lastPathComponent) }
+
+    func toggleFavorite(_ url: URL) {
+        if favorites.remove(url.lastPathComponent) == nil { favorites.insert(url.lastPathComponent) }
+        UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favorites")
+        onChange?()
+    }
+
+    /// When the wallpaper was added (its file's creation date).
+    func addedDate(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+    }
+
+    /// The library filtered by a search query (and optionally to favorites), in the chosen order.
+    func videos(sortedBy sort: LibrarySort, matching query: String, favoritesOnly: Bool) -> [URL] {
+        let terms = query.lowercased().split(separator: " ")
+        let shown = videos.filter { url in
+            let name = url.deletingPathExtension().lastPathComponent.lowercased()
+            return (!favoritesOnly || isFavorite(url)) && terms.allSatisfy { name.contains($0) }
+        }
+        func pixels(_ url: URL) -> CGFloat { infos[url].map { $0.size.width * $0.size.height } ?? 0 }
+        switch sort {
+        case .name: return shown
+        case .newest: return shown.sorted { addedDate($0) > addedDate($1) }
+        case .resolution: return shown.sorted { pixels($0) > pixels($1) }
+        case .duration: return shown.sorted { (infos[$0]?.duration ?? 0) > (infos[$1]?.duration ?? 0) }
+        case .favoritesFirst: return shown.filter(isFavorite) + shown.filter { !isFavorite($0) }
+        }
+    }
+
     func setEdits(_ edits: Edits, for url: URL) {
         allEdits[url.lastPathComponent] = edits == Edits() ? nil : edits
         saveEdits()
@@ -166,6 +201,7 @@ final class Library {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         allEdits[url.lastPathComponent] = nil
         saveEdits()
+        if favorites.remove(url.lastPathComponent) != nil { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favorites") }
         reload()
     }
 

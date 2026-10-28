@@ -44,6 +44,8 @@ final class Prefs: ObservableObject {
     /// Switch to another wallpaper every this many minutes (0 = never).
     var rotationMinutes: Int { get { get("rotationMinutes", 0) } set { set("rotationMinutes", newValue) } }
     var rotationOrder: RotationOrder { get { get("rotationOrder", RotationOrder.inOrder) } set { set("rotationOrder", newValue) } }
+    var rotationFavoritesOnly: Bool { get { get("rotationFavoritesOnly", false) } set { set("rotationFavoritesOnly", newValue) } }
+    var librarySort: LibrarySort { get { get("librarySort", LibrarySort.name) } set { set("librarySort", newValue) } }
 
     // Appearance
     var theme: Theme { get { get("theme", Theme.system) } set { set("theme", newValue) } }
@@ -79,7 +81,7 @@ final class Prefs: ObservableObject {
 
     /// Puts every setting back to its default (wallpapers, edits and models are kept).
     func resetAll() {
-        let keys = ["pauseOnBattery", "pauseBelowBattery", "displays", "dimming", "rotationMinutes", "rotationOrder",
+        let keys = ["pauseOnBattery", "pauseBelowBattery", "displays", "dimming", "rotationMinutes", "rotationOrder", "rotationFavoritesOnly", "librarySort",
                     "theme", "accent", "menuBarIcon", "tileSize", "showPreviews", "showShortcutHints", "openWindowAtLaunch",
                     "confirmRemove", "importLimit", "youTubeQuality", "autoUpscale", "showImportTips", "upscaleTile",
                     "upscaleFullPrecision", "upscaleQuality", "upscaleFolder", "memoryRefreshSeconds", "autoCheckUpdates",
@@ -97,6 +99,19 @@ enum DisplayChoice: String, CaseIterable, PrefValue {
 enum RotationOrder: String, CaseIterable, PrefValue {
     case inOrder, shuffle
     var title: String { self == .inOrder ? "In order" : "Shuffle" }
+}
+
+enum LibrarySort: String, CaseIterable, PrefValue {
+    case name, newest, resolution, duration, favoritesFirst
+    var title: String {
+        switch self {
+        case .name: "Name"
+        case .newest: "Newest first"
+        case .resolution: "Highest resolution"
+        case .duration: "Longest"
+        case .favoritesFirst: "Favorites first"
+        }
+    }
 }
 
 enum Theme: String, CaseIterable, PrefValue {

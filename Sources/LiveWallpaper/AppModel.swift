@@ -46,6 +46,9 @@ final class AppModel: ObservableObject {
             objectWillChange.send()
         }
     }
+    /// The Library search box and Favorites filter (not saved between launches).
+    var librarySearch = "" { didSet { objectWillChange.send() } }
+    var showFavoritesOnly = false { didSet { objectWillChange.send() } }
     /// Whether the last tab change moved right (pages slide in from that side).
     private(set) var tabMovedForward = true
     let memory = MemoryCleaner()
@@ -499,7 +502,11 @@ final class AppModel: ObservableObject {
 
     /// Switches the home screen to the next (or a random) wallpaper in the library.
     func nextWallpaper() {
-        let candidates = library.videos.filter { library.broken[$0] == nil }
+        var candidates = library.videos.filter { library.broken[$0] == nil }
+        // Settings › Rotation › Only favorites (ignored until at least two are starred).
+        if prefs.rotationFavoritesOnly, candidates.filter(library.isFavorite).count > 1 {
+            candidates = candidates.filter(library.isFavorite)
+        }
         guard candidates.count > 1 else { return }
         switch prefs.rotationOrder {
         case .inOrder:

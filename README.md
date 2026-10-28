@@ -54,6 +54,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - damaged videos already in the library, and videos that fail during playback, show a red *Broken* tile
 - **Menu bar panel and a full Mac window.** The panel is for quick picks. The window puts its sections (Wallpapers, Upscale, Memory, Settings) as tabs in the toolbar — a pill glides to the one you pick and pages slide in the direction you move (a cross-fade with Reduce Motion) — with each section's actions beside them, playback status on the left, and live miniatures of your home screen (the wallpaper actually playing) and lock screen (with the clock drawn over it). It's resizable and full-screen capable.
 - **Keyboard shortcuts:** ⌘1–⌘3 switch sections, ⌘, opens Settings, ⌘O adds a video, ⌘L adds from YouTube, ⇧⌘F finds videos on this Mac, ⌥⌘P pauses or resumes.
+- **Favorites, search and sorting.** Star wallpapers (hover a thumbnail), search the library, filter to favorites, and sort by name, newest, resolution, length or favorites first. Rotation can be limited to favorites.
 - **ⓘ on everything.** Every setting, section and model has an ⓘ button that explains what it does.
 - **Lots of settings** (each with an ⓘ):
   - *Playback* — Low Power Mode, pause when covered, pause on battery, pause below a battery level, all displays or only the main one, dim the wallpaper

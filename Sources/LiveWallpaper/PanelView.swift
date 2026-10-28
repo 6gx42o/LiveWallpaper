@@ -176,6 +176,7 @@ struct WallpaperTile: View {
     private var brokenReason: String? { model.library.broken[url] }
     private var isHome: Bool { url == model.current }
     private var isLock: Bool { url == model.lockScreen }
+    private var isFavorite: Bool { model.library.isFavorite(url) }
     private var canEdit: Bool { model.library.infos[url] != nil }
     private var qualityWarning: String? { model.library.issues(for: url).first { $0.severity == .warning }?.text }
 
@@ -192,13 +193,23 @@ struct WallpaperTile: View {
                 .accessibilityLabel(brokenReason == nil ? "Use \(name) as home screen wallpaper" : "\(name) is broken")
                 .help(brokenReason ?? "Click to use as your home screen wallpaper")
                 .overlay(alignment: .topTrailing) {
-                    Button(action: remove) { circleIcon("trash") }
+                    HStack(spacing: 4) {
+                        Button { model.library.toggleFavorite(url) } label: {
+                            circleIcon(isFavorite ? "star.fill" : "star").foregroundStyle(isFavorite ? AnyShapeStyle(.yellow) : AnyShapeStyle(.primary))
+                        }
                         .buttonStyle(.plain)
-                        .padding(6)
-                        .help("Move to Trash")
-                        .accessibilityLabel("Remove \(name)")
-                        .opacity(hover.isOn ? 1 : 0)
-                        .allowsHitTesting(hover.isOn)
+                        .help(isFavorite ? "Remove from favorites" : "Add to favorites")
+                        .accessibilityLabel(isFavorite ? "Remove \(name) from favorites" : "Add \(name) to favorites")
+                        .opacity(hover.isOn || isFavorite ? 1 : 0)
+                        .allowsHitTesting(hover.isOn || isFavorite)
+                        Button(action: remove) { circleIcon("trash") }
+                            .buttonStyle(.plain)
+                            .help("Move to Trash")
+                            .accessibilityLabel("Remove \(name)")
+                            .opacity(hover.isOn ? 1 : 0)
+                            .allowsHitTesting(hover.isOn)
+                    }
+                    .padding(6)
                 }
                 .overlay(alignment: .topLeading) {
                     HStack(spacing: 4) {
@@ -251,6 +262,7 @@ struct WallpaperTile: View {
             Button("Use as Home Screen", action: select).disabled(brokenReason != nil)
             Button(isLock ? "Remove from Lock Screen" : "Use as Lock Screen", action: toggleLock).disabled(brokenReason != nil)
             Button("Edit…", action: edit).disabled(!canEdit)
+            Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.library.toggleFavorite(url) }
             Divider()
             Button("Move to Trash", role: .destructive, action: remove)
         }

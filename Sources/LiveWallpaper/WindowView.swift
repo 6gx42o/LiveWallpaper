@@ -170,6 +170,7 @@ private struct WallpapersPane: View {
 
     var body: some View {
         let lib = model.library
+        let shown = lib.videos(sortedBy: model.prefs.librarySort, matching: model.librarySearch, favoritesOnly: model.showFavoritesOnly)
         VStack(alignment: .leading, spacing: 24) {
             if model.prefs.showPreviews {
                 HStack(alignment: .top, spacing: 20) {
@@ -198,16 +199,31 @@ private struct WallpapersPane: View {
                 DropZone(isLarge: true, acceptsDrops: true, add: model.addVideos)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline) {
+                    HStack(alignment: .center, spacing: 10) {
                         Text("Library").font(.title3.weight(.semibold))
-                        Text("\(lib.videos.count)").foregroundStyle(.secondary).monospacedDigit()
-                        InfoButton("Every video you've added, converted for smooth, battery-friendly playback. Click one to make it your home screen; click its lock to use a still of it on the lock screen. Hover for edit and trash buttons, or right-click for everything.")
+                        Text("\(shown.count == lib.videos.count ? "\(lib.videos.count)" : "\(shown.count) of \(lib.videos.count)")")
+                            .foregroundStyle(.secondary).monospacedDigit()
+                        InfoButton("Every video you've added, converted for smooth, battery-friendly playback. Click one to make it your home screen; click its lock to use a still of it on the lock screen. Hover for the star (favorites), edit and trash buttons, or right-click for everything.")
                         Spacer()
-                        Text("Click to set the home screen · drop videos anywhere to add")
-                            .font(.caption).foregroundStyle(.tertiary)
+                        TextField("Search", text: Binding(get: { model.librarySearch }, set: { model.librarySearch = $0 }))
+                            .textFieldStyle(.roundedBorder).frame(width: 170)
+                        Toggle(isOn: Binding(get: { model.showFavoritesOnly }, set: { model.showFavoritesOnly = $0 })) {
+                            Label("Favorites", systemImage: model.showFavoritesOnly ? "star.fill" : "star")
+                        }
+                        .toggleStyle(.button)
+                        .help("Show only starred wallpapers")
+                        Picker("Sort", selection: Binding(get: { model.prefs.librarySort }, set: { model.prefs.librarySort = $0 })) {
+                            ForEach(LibrarySort.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 160)
+                        .help("Sort the library")
+                    }
+                    if shown.isEmpty {
+                        Text(model.showFavoritesOnly && model.librarySearch.isEmpty ? "No favorites yet — hover a wallpaper and click its star." : "No wallpapers match “\(model.librarySearch)”.")
+                            .font(.callout).foregroundStyle(.secondary).padding(.vertical, 20)
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: model.prefs.tileSize.minWidth, maximum: model.prefs.tileSize.minWidth * 1.6), spacing: 16)], spacing: 18) {
-                        ForEach(lib.videos, id: \.self) { url in
+                        ForEach(shown, id: \.self) { url in
                             WallpaperTile(model: model, url: url)
                         }
                     }
@@ -215,7 +231,7 @@ private struct WallpapersPane: View {
             }
         }
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1), value: lib.notices.map(\.id))
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1), value: lib.videos)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1), value: shown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: model.current)
     }
 

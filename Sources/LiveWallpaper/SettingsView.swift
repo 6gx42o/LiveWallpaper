@@ -98,7 +98,11 @@ struct SettingsPane: View {
             } label: {
                 label("Order", info: "In order follows the library's alphabetical order; Shuffle picks a different random wallpaper each time.")
             }
-            HStack {
+            Toggle(isOn: bind(\.rotationFavoritesOnly)) {
+                label("Only favorites", "Rotate between starred wallpapers.",
+                      info: "Star wallpapers in the library (hover a thumbnail and click the star) and rotation — and Next Wallpaper — will only pick from those. Needs at least two favorites; otherwise the whole library is used.")
+            }
+                        HStack {
                 label("Switch now", info: "Moves to the next wallpaper right away, using the order above.")
                 Spacer()
                 Button("Next Wallpaper") { model.nextWallpaper() }
