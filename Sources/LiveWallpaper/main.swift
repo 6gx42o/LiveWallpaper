@@ -32,8 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: model.prefs.menuBarIcon.rawValue, accessibilityDescription: "LiveWallpaper")
     }
 
-    /// `open -a LiveWallpaper clip.mov` / Open With → import.
-    func application(_ application: NSApplication, open urls: [URL]) { model.library.add(urls) }
+    /// `open -a LiveWallpaper clip.mov` / Open With → import; `livewallpaper://…` links → actions.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let files = urls.filter(\.isFileURL)
+        if !files.isEmpty { model.library.add(files) }
+        for url in urls where !url.isFileURL {
+            if let action = URLAction(url) { model.perform(action) }
+        }
+    }
 
     /// Opening the app again while it's running brings up the window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

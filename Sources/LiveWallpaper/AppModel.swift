@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
     /// Whether the last tab change moved right (pages slide in from that side).
     private(set) var tabMovedForward = true
     let memory = MemoryCleaner()
+    let hotKeys = HotKeys()
     let studio = UpscaleStudio()
     /// A model being downloaded from Settings / the model list.
     private(set) var modelDownload: (engine: Upscaler.Engine, progress: TransferProgress)? { didSet { objectWillChange.send() } }
@@ -100,6 +101,13 @@ final class AppModel: ObservableObject {
 
     init() {
         gate.onChange = { [unowned self] in objectWillChange.send() }
+        hotKeys.onAction = { [unowned self] action in
+            switch action {
+            case .next: nextWallpaper()
+            case .togglePause: gate.userPaused.toggle()
+            case .openWindow: openWindow?()
+            }
+        }
         memory.onCacheCleared = { [unowned self] in
             // Reload the wallpaper in place so it isn't left blank after macOS drops its cached frames.
             windows.forEach { $0.reload() }
@@ -176,6 +184,24 @@ final class AppModel: ObservableObject {
     func select(_ url: URL) {
         guard library.broken[url] == nil else { return }
         current = url
+    }
+
+    /// Runs a `livewallpaper://` link.
+    func perform(_ action: URLAction) {
+        switch action {
+        case .next: nextWallpaper()
+        case .pause: gate.userPaused = true
+        case .resume: gate.userPaused = false
+        case .togglePause: gate.userPaused.toggle()
+        case .set(let name):
+            guard let url = URLAction.match(name, in: library.videos) else {
+                return library.post(.init(title: "No wallpaper named “\(name)”", reason: "A livewallpaper://set link asked for it, but it isn't in your library."))
+            }
+            select(url)
+        case .open(let tab):
+            if let tab { self.tab = tab }
+            openWindow?()
+        }
     }
 
     // MARK: Per-display wallpapers

@@ -2,28 +2,59 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key><string>com.rushilluthra.LiveWallpaper</string>
-    <key>CFBundleName</key><string>LiveWallpaper</string>
-    <key>CFBundleDisplayName</key><string>LiveWallpaper</string>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key><string>Video</string>
-            <key>CFBundleTypeRole</key><string>Viewer</string>
-            <key>LSHandlerRank</key><string>Alternate</string>
-            <key>LSItemContentTypes</key><array><string>public.movie</string></array>
-        </dict>
-    </array>
-    <key>CFBundleExecutable</key><string>LiveWallpaper</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
-    <key>LSMinimumSystemVersion</key><string>15.0</string>
-    <key>LSUIElement</key><true/>
-    <key>NSLocationUsageDescription</key><string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
-    <key>NSLocationWhenInUseUsageDescription</key><string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
-    <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Rushil Luthra</string>
+	<key>CFBundleDisplayName</key>
+	<string>LiveWallpaper</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Video</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.movie</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleExecutable</key>
+	<string>LiveWallpaper</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.rushilluthra.LiveWallpaper</string>
+	<key>CFBundleName</key>
+	<string>LiveWallpaper</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.rushilluthra.LiveWallpaper</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>livewallpaper</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Rushil Luthra</string>
+	<key>NSLocationUsageDescription</key>
+	<string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
 </dict>
 </plist>

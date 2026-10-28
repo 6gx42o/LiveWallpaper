@@ -42,6 +42,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Editor.** Trim, playback speed, Fill/Fit framing with crop position, and the lock screen frame — all non-destructive, with a live preview shaped like your display.
 - **Look and seamless loops.** In the editor: brightness, contrast, saturation, warmth, soft focus and vignette (previewed live), and a seamless loop that cross-fades a clip's end into its start so it repeats without a jump. Both are rendered once into a hidden copy when you save — playback costs no extra battery — and the original is kept; the lock screen still gets the same look.
 - **Smooth motion (60 fps).** "Make Smooth (60 fps)" (tile right-click menu or the editor) creates the in-between frames for 24–30 fps footage with macOS's built-in frame interpolation (VideoToolbox, macOS 15.4+, Apple silicon — nothing to download) and adds a "(60 fps)" copy; the original is kept. A 60 fps wallpaper uses roughly twice the battery of a 30 fps one while it plays.
+- **Shortcuts.** Global keyboard shortcuts (any app, no permission needed) for Next wallpaper, Pause/Resume and Open — record them in Settings › Shortcuts. `livewallpaper://` links (`next`, `pause`, `resume`, `toggle`, `set?name=…`, `open?tab=…`) work from the Shortcuts app's "Open URLs" action, Raycast, Alfred or `open` in Terminal. Native Shortcuts actions (App Intents) and a Control Center button need an Xcode-built app extension, which this SwiftPM build doesn't have; the links cover the same jobs.
 - **Sits behind your desktop icons** on every display and every Space.
 - **Pauses itself when it can't be seen:**
   - a full-screen app or maximized window covers the desktop
@@ -144,6 +145,7 @@ Sources/LiveWallpaper/
   Bake.swift             Look adjustments + seamless-loop cross-fade, rendered once into a hidden copy
   PhotosImport.swift     Photos picker import: videos and Live Photos (no library permission needed)
   SmoothMotion.swift     60 fps copies via VideoToolbox frame-rate conversion (macOS 15.4+)
+  Shortcuts.swift        livewallpaper:// links and global hot keys (Carbon RegisterEventHotKey)
   Scheduler.swift        time-of-day / sunrise-sunset / Light-Dark schedules (sunrise equation, no polling)
   PanelView.swift        the menu bar panel + shared tile, notice and drop-zone views
   EditorView.swift       trim / speed / framing / lock frame / quality editor

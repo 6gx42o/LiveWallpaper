@@ -7,12 +7,14 @@ struct SettingsPane: View {
     @ObservedObject var prefs: Prefs
     @ObservedObject var updater: Updater
     @ObservedObject var scheduler: Scheduler
+    @ObservedObject var hotKeys: HotKeys
 
     init(model: AppModel) {
         self.model = model
         prefs = model.prefs
         updater = model.updater
         scheduler = model.scheduler
+        hotKeys = model.hotKeys
     }
 
     var body: some View {
@@ -33,6 +35,7 @@ struct SettingsPane: View {
                     label("Refresh the Memory section", info: "How often the memory gauge and app list update while the Memory section is open. Slower refreshing uses a little less energy. Nothing is measured while it's closed.")
                 }
             } header: { Text("Memory") }
+            shortcuts
             updates
             Section {
                 HStack {
@@ -232,6 +235,35 @@ struct SettingsPane: View {
         }
     }
 
+    private var shortcuts: some View {
+        Section("Shortcuts") {
+            ForEach(HotKeys.Action.allCases, id: \.self) { action in
+                HStack {
+                    label(action.title, hotKeys.failures[action],
+                          info: "A keyboard shortcut that works in any app. Click the box and press the keys — it needs ⌘, ⌃ or ⌥ so it can't fire while you type. Press Delete to remove it, Esc to cancel.")
+                    Spacer()
+                    HotKeyRecorder(combo: hotKeys.combos[action]) { hotKeys.set($0, for: action) }
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                label("Links", "Use them in Shortcuts (Open URLs), Raycast, Alfred or Terminal (open “link”).",
+                      info: "Opening one of these links controls LiveWallpaper. In the Shortcuts app, add an “Open URLs” action with the link. Native Shortcuts actions and a Control Center button need an Xcode-built app extension, which this build doesn't have — these links do the same jobs.")
+                ForEach(URLAction.examples, id: \.link) { example in
+                    HStack {
+                        Text(example.link).font(.callout.monospaced()).textSelection(.enabled)
+                        Text(example.does).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(example.link, forType: .string)
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
     private var general: some View {
         Section("General") {
             Toggle(isOn: Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })) {
@@ -356,9 +388,50 @@ struct SettingsPane: View {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         prefs.resetAll()
+        model.hotKeys.clearAll()
         model.gate.playsInLowPowerMode = false
         model.gate.pausesWhenCovered = true
         model.asksToDeleteModel = true
+    }
+}
+
+/// Click, then press a shortcut to record it; Delete clears it, Esc cancels.
+struct HotKeyRecorder: View {
+    let combo: HotKeys.Combo?
+    let onChange: (HotKeys.Combo?) -> Void
+    @StateObject private var recording = Flag()
+    @StateObject private var monitor = Box()
+
+    final class Box: ObservableObject { var token: Any? }
+
+    var body: some View {
+        Button(action: start) {
+            Text(recording.isOn ? "Type shortcut…" : combo?.text ?? "Record Shortcut")
+                .font(combo == nil || recording.isOn ? .callout : .callout.monospaced())
+                .frame(minWidth: 120)
+        }
+            .onDisappear(perform: stop)
+    }
+
+    private func start() {
+        guard !recording.isOn else { return stop() }
+        recording.isOn = true
+        monitor.token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch Int(event.keyCode) {
+            case 53: stop() // Esc
+            case 51, 117: stop(); onChange(nil) // Delete, Forward Delete
+            default:
+                guard let combo = HotKeys.combo(from: event) else { NSSound.beep(); return nil }
+                stop(); onChange(combo)
+            }
+            return nil
+        }
+    }
+
+    private func stop() {
+        recording.isOn = false
+        if let token = monitor.token { NSEvent.removeMonitor(token) }
+        monitor.token = nil
     }
 }
 
