@@ -173,9 +173,17 @@ private struct WallpapersPane: View {
         let shown = lib.videos(sortedBy: model.prefs.librarySort, matching: model.librarySearch, favoritesOnly: model.showFavoritesOnly)
         VStack(alignment: .leading, spacing: 24) {
             if model.prefs.showPreviews {
-                HStack(alignment: .top, spacing: 20) {
-                    homeScreen
-                    lockScreen
+                if model.displays.count > 1 {
+                    // One live preview per display (each can show its own wallpaper), then the lock screen.
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 20), GridItem(.flexible(), spacing: 20)], alignment: .leading, spacing: 20) {
+                        ForEach(model.displays, id: \.uuid) { display in displayScreen(display) }
+                        lockScreen
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 20) {
+                        homeScreen
+                        lockScreen
+                    }
                 }
             }
 
@@ -255,6 +263,39 @@ private struct WallpapersPane: View {
                 Circle().fill(status.color).frame(width: 6, height: 6)
                 Text(status.text)
             }
+        }
+    }
+
+    /// A display's live preview; drop a library tile on it (or use Show) to give that display its own wallpaper.
+    private func displayScreen(_ display: (uuid: String, name: String)) -> some View {
+        let url = model.wallpaper(forDisplay: display.uuid)
+        let info = url.flatMap { model.library.infos[$0] }
+        let own = model.wallpaperByDisplay[display.uuid] != nil
+        return ScreenCaption(title: display.name, detail: name(url).map { $0 + (own ? "" : " (default)") } ?? "No video", symbol: "display",
+                             info: "This display's wallpaper, playing live. Drag a wallpaper from the library onto it, or use Show, to give this display its own video; displays without one show the default (the wallpaper you click in the library).") {
+            ScreenFrame(showsMenuBar: true) {
+                if let url, let info, let player = model.previewPlayer(forDisplay: display.uuid) {
+                    PlayerPreview(player: player, video: info.size, edits: model.library.edits(for: url))
+                }
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard let url = urls.first(where: model.library.videos.contains) else { return false }
+                model.setWallpaper(url, onDisplay: display.uuid)
+                return true
+            }
+        } accessory: {
+            Menu("Show") {
+                ForEach(model.library.videos.filter { model.library.broken[$0] == nil }, id: \.self) { video in
+                    Button(video.deletingPathExtension().lastPathComponent) { model.setWallpaper(video, onDisplay: display.uuid) }
+                }
+                if own {
+                    Divider()
+                    Button("Use the Default") {
+                        if let current = model.current { model.useOnAllDisplays(current) }
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton).fixedSize()
         }
     }
 

@@ -5,6 +5,10 @@ import AVFoundation
 final class WallpaperWindow: NSWindow {
     let player = AVQueuePlayer()
     let displayID: CGDirectDisplayID
+    /// Stable identity used to remember this display's own wallpaper.
+    let displayUUID: String
+    /// e.g. "Built-in Retina Display", "LG UltraFine".
+    let displayName: String
     private let playerLayer: AVPlayerLayer
     /// Black layer over the video; its opacity is the "Dim wallpaper" setting.
     private let dimLayer = CALayer()
@@ -27,6 +31,8 @@ final class WallpaperWindow: NSWindow {
 
     init(screen: NSScreen) {
         displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+        displayUUID = SystemInfo.displayUUID(displayID)
+        displayName = screen.localizedName
         playerLayer = AVPlayerLayer(player: player)
         super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))

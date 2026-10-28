@@ -111,6 +111,7 @@ final class AppModel: ObservableObject {
         library.onConverted = { [unowned self] url in if current == nil { current = url } }
         library.onUpscaled = { [unowned self] original, upscaled, method in
             if current == original { current = upscaled }
+            wallpaperByDisplay = wallpaperByDisplay.mapValues { $0 == original.lastPathComponent ? upscaled.lastPathComponent : $0 }
             if lockScreen == original { setLockScreen(upscaled) }
             modelUsed(method)
         }
@@ -170,6 +171,44 @@ final class AppModel: ObservableObject {
         current = url
     }
 
+    // MARK: Per-display wallpapers
+
+    /// Displays that show their own wallpaper instead of the default (`current`): display UUID → file name.
+    private(set) var wallpaperByDisplay: [String: String] =
+        UserDefaults.standard.dictionary(forKey: "wallpaperByDisplay") as? [String: String] ?? [:] {
+        didSet {
+            UserDefaults.standard.set(wallpaperByDisplay, forKey: "wallpaperByDisplay")
+            loadCurrent()
+            objectWillChange.send()
+        }
+    }
+
+    /// The displays showing a wallpaper (their window order), with names for menus.
+    var displays: [(uuid: String, name: String)] { windows.map { ($0.displayUUID, $0.displayName) } }
+
+    /// What a display shows: its own wallpaper if it has one, otherwise the default.
+    func wallpaper(forDisplay uuid: String) -> URL? {
+        if let name = wallpaperByDisplay[uuid], let url = library.videos.first(where: { $0.lastPathComponent == name }),
+           library.broken[url] == nil {
+            return url
+        }
+        return isCurrentBroken ? nil : current
+    }
+
+    func setWallpaper(_ url: URL, onDisplay uuid: String) {
+        guard library.broken[url] == nil else { return }
+        wallpaperByDisplay[uuid] = url.lastPathComponent
+    }
+
+    /// Shows `url` everywhere: it becomes the default and per-display choices are cleared.
+    func useOnAllDisplays(_ url: URL) {
+        guard library.broken[url] == nil else { return }
+        wallpaperByDisplay = [:]
+        current = url
+    }
+
+    func previewPlayer(forDisplay uuid: String) -> AVPlayer? { windows.first { $0.displayUUID == uuid }?.player }
+
     /// Sets (or with nil, removes and restores the user's own picture) the lock screen wallpaper.
     func setLockScreen(_ url: URL?) {
         guard let url else {
@@ -214,6 +253,7 @@ final class AppModel: ObservableObject {
             if alert.suppressionButton?.state == .on { prefs.confirmRemove = false }
         }
         if url == current { current = nil }
+        wallpaperByDisplay = wallpaperByDisplay.filter { $0.value != url.lastPathComponent }
         if url == lockScreen { setLockScreen(nil) }
         if editor?.url == url { closeEditor(save: false) }
         library.remove(url)
@@ -508,20 +548,26 @@ final class AppModel: ObservableObject {
             candidates = candidates.filter(library.isFavorite)
         }
         guard candidates.count > 1 else { return }
-        switch prefs.rotationOrder {
-        case .inOrder:
-            let index = current.flatMap(candidates.firstIndex(of:)) ?? -1
-            current = candidates[(index + 1) % candidates.count]
-        case .shuffle:
-            current = candidates.filter { $0 != current }.randomElement()
+        func next(after url: URL?) -> URL? {
+            switch prefs.rotationOrder {
+            case .inOrder: candidates[((url.flatMap(candidates.firstIndex(of:)) ?? -1) + 1) % candidates.count]
+            case .shuffle: candidates.filter { $0 != url }.randomElement()
+            }
         }
+        // Every display moves on: its own wallpaper if it has one, and the default.
+        let overrides = wallpaperByDisplay.compactMapValues { name in
+            next(after: library.videos.first { $0.lastPathComponent == name })?.lastPathComponent
+        }
+        if overrides != wallpaperByDisplay { wallpaperByDisplay = overrides }
+        current = next(after: current)
     }
 
     private func loadCurrent() {
-        let url = isCurrentBroken ? nil : current
-        let info = url.flatMap { library.infos[$0] }
-        let edits = url.map(library.edits(for:)) ?? Edits()
-        windows.forEach { $0.load(url, edits: edits, size: info?.size, duration: info?.duration ?? 0) }
+        for window in windows {
+            let url = wallpaper(forDisplay: window.displayUUID)
+            let info = url.flatMap { library.infos[$0] }
+            window.load(url, edits: url.map(library.edits(for:)) ?? Edits(), size: info?.size, duration: info?.duration ?? 0)
+        }
         gate.apply()
     }
 

@@ -12,6 +12,12 @@ enum SystemInfo {
         return sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 && value == 1
     }()
     static let totalMemory = Int64(ProcessInfo.processInfo.physicalMemory)
+
+    /// A display's stable identity (survives reboots and re-plugging, unlike its numeric ID).
+    static func displayUUID(_ id: CGDirectDisplayID) -> String {
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return "display-\(id)" }
+        return CFUUIDCreateString(nil, uuid) as String
+    }
     /// GPU cores on Apple silicon (e.g. 10 on an M5, 40 on an M4 Max); nil when macOS doesn't say.
     static let gpuCores: Int? = {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"))

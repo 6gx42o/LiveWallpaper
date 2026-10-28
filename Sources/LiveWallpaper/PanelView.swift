@@ -189,6 +189,7 @@ struct WallpaperTile: View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: select) { preview }
                 .buttonStyle(.plain)
+                .draggable(url) { preview.frame(width: 160) }
                 .disabled(brokenReason != nil)
                 .accessibilityLabel(brokenReason == nil ? "Use \(name) as home screen wallpaper" : "\(name) is broken")
                 .help(brokenReason ?? "Click to use as your home screen wallpaper")
@@ -259,7 +260,17 @@ struct WallpaperTile: View {
         .onHover { hover.isOn = $0 }
         .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 1), value: hover.isOn)
         .contextMenu {
-            Button("Use as Home Screen", action: select).disabled(brokenReason != nil)
+            Button(model.displays.count > 1 ? "Use as Default Wallpaper" : "Use as Home Screen", action: select).disabled(brokenReason != nil)
+            if model.displays.count > 1 {
+                Menu("Use on Display") {
+                    ForEach(model.displays, id: \.uuid) { display in
+                        Button(display.name) { model.setWallpaper(url, onDisplay: display.uuid) }
+                    }
+                    Divider()
+                    Button("All Displays") { model.useOnAllDisplays(url) }
+                }
+                .disabled(brokenReason != nil)
+            }
             Button(isLock ? "Remove from Lock Screen" : "Use as Lock Screen", action: toggleLock).disabled(brokenReason != nil)
             Button("Edit…", action: edit).disabled(!canEdit)
             Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.library.toggleFavorite(url) }

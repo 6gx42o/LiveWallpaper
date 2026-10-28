@@ -164,7 +164,8 @@ extension AppDelegate: NSMenuItemValidation {
 /// The main window forwards drag & drop to its delegate (anywhere in the window).
 extension AppDelegate: NSDraggingDestination {
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard model.tab == .wallpapers || model.tab == .upscale else { return [] }
+        // Library tiles dragged onto a display preview are internal (draggingSource set) — never import them.
+        guard sender.draggingSource == nil, model.tab == .wallpapers || model.tab == .upscale else { return [] }
         model.isDropTargeted = true
         return .copy
     }
@@ -173,6 +174,7 @@ extension AppDelegate: NSDraggingDestination {
 
     func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         model.isDropTargeted = false
+        guard sender.draggingSource == nil else { return false }
         model.handleDrop(sender.draggingPasteboard)
         return true
     }
