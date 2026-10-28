@@ -41,6 +41,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
 - **Find Videos.** Scans Movies, Downloads, Desktop, Documents and Pictures for videos that could be wallpapers, grades each against your display (Great fit / Good fit / Low resolution), and lets you tick the ones to add — nothing is added automatically.
 - **Editor.** Trim, playback speed, Fill/Fit framing with crop position, and the lock screen frame — all non-destructive, with a live preview shaped like your display.
 - **Look and seamless loops.** In the editor: brightness, contrast, saturation, warmth, soft focus and vignette (previewed live), and a seamless loop that cross-fades a clip's end into its start so it repeats without a jump. Both are rendered once into a hidden copy when you save — playback costs no extra battery — and the original is kept; the lock screen still gets the same look.
+- **Smooth motion (60 fps).** "Make Smooth (60 fps)" (tile right-click menu or the editor) creates the in-between frames for 24–30 fps footage with macOS's built-in frame interpolation (VideoToolbox, macOS 15.4+, Apple silicon — nothing to download) and adds a "(60 fps)" copy; the original is kept. A 60 fps wallpaper uses roughly twice the battery of a 30 fps one while it plays.
 - **Sits behind your desktop icons** on every display and every Space.
 - **Pauses itself when it can't be seen:**
   - a full-screen app or maximized window covers the desktop
@@ -142,6 +143,7 @@ Sources/LiveWallpaper/
   Updater.swift          checks GitHub releases, verifies and installs updates in place
   Bake.swift             Look adjustments + seamless-loop cross-fade, rendered once into a hidden copy
   PhotosImport.swift     Photos picker import: videos and Live Photos (no library permission needed)
+  SmoothMotion.swift     60 fps copies via VideoToolbox frame-rate conversion (macOS 15.4+)
   Scheduler.swift        time-of-day / sunrise-sunset / Light-Dark schedules (sunrise equation, no polling)
   PanelView.swift        the menu bar panel + shared tile, notice and drop-zone views
   EditorView.swift       trim / speed / framing / lock frame / quality editor

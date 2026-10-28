@@ -273,6 +273,8 @@ struct WallpaperTile: View {
             }
             Button(isLock ? "Remove from Lock Screen" : "Use as Lock Screen", action: toggleLock).disabled(brokenReason != nil)
             Button("Edit…", action: edit).disabled(!canEdit)
+            Button("Make Smooth (60 fps)") { model.makeSmooth(url) }
+                .disabled(brokenReason != nil || model.smoothUnavailableReason(for: url) != nil)
             Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.library.toggleFavorite(url) }
             Divider()
             Button("Move to Trash", role: .destructive, action: remove)

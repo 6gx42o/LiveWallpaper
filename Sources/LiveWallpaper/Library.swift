@@ -25,6 +25,8 @@ final class Library {
         /// Render a wallpaper's look / seamless loop into its baked copy.
         case bake(URL)
         case upscale(URL, allowModelDownload: Bool)
+        /// Make a 60 fps copy with frame interpolation.
+        case smooth(URL)
         /// A link dragged in from a browser (image, GIF or video file).
         case download(URL)
         /// A YouTube link, fetched with yt-dlp.
@@ -257,6 +259,12 @@ final class Library {
         next()
     }
 
+    /// Queues a smooth 60 fps copy of a library video.
+    func smooth(_ url: URL) {
+        queue.append(.smooth(url))
+        next()
+    }
+
     func remove(_ url: URL) {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         allEdits[url.lastPathComponent] = nil
@@ -320,6 +328,7 @@ final class Library {
         case .download(let url): runDownload(url)
         case .youtube(let url): runYouTube(url)
         case .bake(let url): runBake(url)
+        case .smooth(let url): runSmooth(url)
         }
     }
 
@@ -483,6 +492,34 @@ final class Library {
             } catch {
                 log.error("upscale failed \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 notices.append(Notice(title: "Couldn't upscale “\(name)”", reason: "Upscaling failed, so the original is unchanged.",
+                                      details: error.localizedDescription))
+            }
+            finishJob()
+        }
+    }
+
+    private func runSmooth(_ url: URL) {
+        guard #available(macOS 15.4, *) else { return next() }
+        busy = true
+        let name = url.deletingPathExtension().lastPathComponent
+        let title = "Making “\(name)” smooth (60 fps)"
+        setProgress(title, 0)
+        currentTask = Task {
+            do {
+                let out = freeURL(for: "\(name) (60 fps)")
+                let tmp = dir.appending(path: out.deletingPathExtension().lastPathComponent + Self.tmpSuffix)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                try await SmoothMotion.convert(url, to: tmp) { self.setProgress(title, $0) }
+                try FileManager.default.moveItem(at: tmp, to: out)
+                allEdits[out.lastPathComponent] = allEdits[url.lastPathComponent]
+                saveEdits()
+                log.notice("smoothed \(url.lastPathComponent, privacy: .public) -> \(out.lastPathComponent, privacy: .public)")
+                notices.append(Notice(kind: .info, title: "Made a smooth 60 fps copy of “\(name)”",
+                                      reason: "The original is kept; “\(out.deletingPathExtension().lastPathComponent)” is now in your library."))
+                reload()
+            } catch {
+                log.error("smooth failed \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                notices.append(Notice(title: "Couldn't make “\(name)” smooth", reason: Task.isCancelled ? "Cancelled." : "Frame interpolation failed, so nothing was added.",
                                       details: error.localizedDescription))
             }
             finishJob()

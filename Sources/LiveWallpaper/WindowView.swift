@@ -27,6 +27,8 @@ struct WindowView: View {
                     editor: editor,
                     upscaleMethod: model.upscaleMethod(for: editor.url).name,
                     upscale: { model.upscale(editor.url) },
+                    smoothUnavailable: model.smoothUnavailableReason(for: editor.url),
+                    smooth: { model.makeSmooth(editor.url) },
                     useForLockScreen: { model.useEditorFrameForLockScreen() },
                     close: { model.closeEditor(save: $0) }
                 )

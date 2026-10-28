@@ -314,6 +314,20 @@ final class AppModel: ObservableObject {
         library.upscale(url, allowModelDownload: allowDownload)
     }
 
+    // MARK: Smooth motion
+
+    /// Why a video can't get a smooth 60 fps copy, or nil when it can.
+    func smoothUnavailableReason(for url: URL) -> String? {
+        guard #available(macOS 15.4, *), SmoothMotion.isSupported else { return "Needs macOS 15.4 or later on an Apple silicon Mac." }
+        guard let fps = library.infos[url]?.fps else { return "This video can't be read." }
+        return fps >= 50 ? "It's already \(Int(fps.rounded())) fps." : nil
+    }
+
+    func makeSmooth(_ url: URL) {
+        guard smoothUnavailableReason(for: url) == nil else { return }
+        library.smooth(url)
+    }
+
     // MARK: Upscaling model
 
     /// Downloads a model now (the Download button), showing size, time left and a progress bar.

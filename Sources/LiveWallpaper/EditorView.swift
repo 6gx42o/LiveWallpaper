@@ -117,6 +117,9 @@ struct EditorView: View {
     /// Name of the upscaler this Mac would use.
     let upscaleMethod: String
     let upscale: () -> Void
+    /// Why a smooth 60 fps copy can't be made (nil when it can).
+    let smoothUnavailable: String?
+    let smooth: () -> Void
     let useForLockScreen: () -> Void
     /// true = save, false = cancel.
     let close: (Bool) -> Void
@@ -291,11 +294,18 @@ struct EditorView: View {
                 }
                 .help("Makes a sharper copy in your library; the original is kept")
             }
+            HStack(spacing: 4) {
+                Button(action: smooth) { Label("Make Smooth (60 fps)", systemImage: "wind") }
+                    .disabled(smoothUnavailable != nil)
+                InfoButton(Self.smoothInfo + (smoothUnavailable.map { "\n\nUnavailable: " + $0 } ?? ""))
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
+
+    static let smoothInfo = "Makes a copy at 60 frames per second by creating in-between frames with macOS's built-in frame interpolation, so slow 24–30 fps footage moves more smoothly. The original is kept. A 60 fps wallpaper uses roughly twice the battery of a 30 fps one while it plays."
 
     private func label(_ text: String, info: String) -> some View {
         HStack(spacing: 4) {
