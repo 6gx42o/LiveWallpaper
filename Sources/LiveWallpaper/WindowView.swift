@@ -121,34 +121,30 @@ struct WindowView: View {
 private struct TabSwitcher: View {
     @ObservedObject var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The pointer is over Upscale (or the Memory tab beside it).
+    @StateObject private var hoveringUpscale = Flag()
     /// Wider when the ⌘ hints are shown so labels never crowd.
     private var tabWidth: CGFloat { model.prefs.showShortcutHints ? 132 : 112 }
+    /// Memory is tucked behind Upscale: it shows while you point at Upscale, or while Upscale or Memory is open.
+    private var showsMemory: Bool { hoveringUpscale.isOn || model.tab == .upscale || model.tab == .memory }
 
     var body: some View {
-        let tabs = AppModel.Tab.allCases
+        let tabs = AppModel.Tab.allCases.filter { $0 != .memory || showsMemory }
         let index = CGFloat(tabs.firstIndex(of: model.tab) ?? 0)
         HStack(spacing: 0) {
-            ForEach(tabs, id: \.self) { tab in
-                let selected = tab == model.tab
-                Button { model.tab = tab } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: tab.symbol)
-                            .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                        Text(tab.rawValue)
-                        if model.prefs.showShortcutHints {
-                            Text(shortcut(tab)).font(.caption2).foregroundStyle(.tertiary)
-                        }
-                    }
-                    .font(.callout.weight(selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .frame(width: tabWidth, height: 26)
-                    .contentShape(Capsule())
+            tabButton(.wallpapers)
+            // One hover area for both, so moving from Upscale onto Memory doesn't hide it.
+            HStack(spacing: 0) {
+                tabButton(.upscale)
+                if showsMemory {
+                    tabButton(.memory)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.85, anchor: .leading)))
                 }
-                .buttonStyle(.plain)
-                .help("\(tab.rawValue) (\(shortcut(tab)))")
-                .accessibilityAddTraits(selected ? .isSelected : [])
             }
+            .onHover { hoveringUpscale.isOn = $0 }
+            tabButton(.settings)
         }
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1), value: showsMemory)
         .background(alignment: .leading) {
             Capsule()
                 .fill(Color(nsColor: .controlColor))
@@ -160,6 +156,27 @@ private struct TabSwitcher: View {
         }
         .padding(3)
         .background(Capsule().fill(Color.primary.opacity(0.06)))
+    }
+
+    private func tabButton(_ tab: AppModel.Tab) -> some View {
+        let selected = tab == model.tab
+        return Button { model.tab = tab } label: {
+            HStack(spacing: 5) {
+                Image(systemName: tab.symbol)
+                    .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                Text(tab.rawValue)
+                if model.prefs.showShortcutHints {
+                    Text(shortcut(tab)).font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            .font(.callout.weight(selected ? .semibold : .regular))
+            .foregroundStyle(selected ? .primary : .secondary)
+            .frame(width: tabWidth, height: 26)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("\(tab.rawValue) (\(shortcut(tab)))")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func shortcut(_ tab: AppModel.Tab) -> String {
