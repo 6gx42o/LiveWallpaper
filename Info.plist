@@ -22,6 +22,8 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSLocationUsageDescription</key><string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
+    <key>NSLocationWhenInUseUsageDescription</key><string>LiveWallpaper uses your approximate location only to work out sunrise and sunset for a sunrise/sunset wallpaper schedule.</string>
     <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Rushil Luthra</string>
 </dict>
 </plist>

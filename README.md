@@ -54,6 +54,7 @@ A tiny native macOS menu bar app that plays a looping video as your desktop wall
   - damaged videos already in the library, and videos that fail during playback, show a red *Broken* tile
 - **Menu bar panel and a full Mac window.** The panel is for quick picks. The window puts its sections (Wallpapers, Upscale, Memory, Settings) as tabs in the toolbar — a pill glides to the one you pick and pages slide in the direction you move (a cross-fade with Reduce Motion) — with each section's actions beside them, playback status on the left, and live miniatures of your home screen (the wallpaper actually playing) and lock screen (with the clock drawn over it). It's resizable and full-screen capable.
 - **Keyboard shortcuts:** ⌘1–⌘3 switch sections, ⌘, opens Settings, ⌘O adds a video, ⌘L adds from YouTube, ⇧⌘F finds videos on this Mac, ⌥⌘P pauses or resumes.
+- **Schedules.** Change the wallpaper at times you pick, at sunrise and sunset where you are (your approximate location, asked once — or typed in), or with macOS's Light/Dark appearance. It wakes only at the next change, and rotation pauses while a schedule is on.
 - **A different wallpaper on each display.** With more than one display, Wallpapers shows a live preview per display: drag a wallpaper onto one (or use its Show menu, or right-click a thumbnail › Use on Display) to give it its own video; the rest show the default. Choices are remembered per display, even after unplugging, and rotation moves every display along.
 - **Favorites, search and sorting.** Star wallpapers (hover a thumbnail), search the library, filter to favorites, and sort by name, newest, resolution, length or favorites first. Rotation can be limited to favorites.
 - **ⓘ on everything.** Every setting, section and model has an ⓘ button that explains what it does.
@@ -137,6 +138,7 @@ Sources/LiveWallpaper/
   SettingsView.swift     Settings, with an ⓘ on every option
   Prefs.swift            every customisation, stored in UserDefaults
   Updater.swift          checks GitHub releases, verifies and installs updates in place
+  Scheduler.swift        time-of-day / sunrise-sunset / Light-Dark schedules (sunrise equation, no polling)
   PanelView.swift        the menu bar panel + shared tile, notice and drop-zone views
   EditorView.swift       trim / speed / framing / lock frame / quality editor
   VideoInfo.swift        video facts, quality checks against the display, edit model

@@ -6,16 +6,19 @@ struct SettingsPane: View {
     @ObservedObject var model: AppModel
     @ObservedObject var prefs: Prefs
     @ObservedObject var updater: Updater
+    @ObservedObject var scheduler: Scheduler
 
     init(model: AppModel) {
         self.model = model
         prefs = model.prefs
         updater = model.updater
+        scheduler = model.scheduler
     }
 
     var body: some View {
         Form {
             playback
+            schedule
             rotation
             appearance
             general
@@ -81,9 +84,86 @@ struct SettingsPane: View {
         }
     }
 
+    private var schedule: some View {
+        Section("Schedule") {
+            Picker(selection: Binding(get: { scheduler.mode }, set: { scheduler.mode = $0 })) {
+                ForEach(Scheduler.Mode.allCases, id: \.self) { Text($0.title).tag($0) }
+            } label: {
+                label("Change the wallpaper", info: "Switch the wallpaper automatically: at times you choose, at sunrise and sunset where you are, or along with macOS's Light and Dark appearance (handy if your Mac switches to Dark at night). It sets the default wallpaper; displays you've given their own keep it. Rotation pauses while a schedule is on.")
+            }
+            switch scheduler.mode {
+            case .off:
+                EmptyView()
+            case .times:
+                ForEach(Array(scheduler.rules.enumerated()), id: \.offset) { index, rule in
+                    HStack {
+                        DatePicker("From", selection: Binding(
+                            get: { Calendar.current.date(byAdding: .minute, value: rule.minutes, to: Calendar.current.startOfDay(for: .now))! },
+                            set: { scheduler.rules[index].minutes = Scheduler.minutes(of: $0) }), displayedComponents: .hourAndMinute)
+                            .labelsHidden()
+                        Text("show").foregroundStyle(.secondary)
+                        wallpaperPicker(Binding(get: { rule.wallpaper }, set: { scheduler.rules[index].wallpaper = $0 }))
+                        Spacer()
+                        Button { scheduler.rules.remove(at: index) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help("Remove this time")
+                    }
+                }
+                Button("Add a Time") {
+                    let last = scheduler.rules.map(\.minutes).max() ?? 7 * 60 - 60
+                    scheduler.rules.append(.init(minutes: min(last + 60, 23 * 60 + 59), wallpaper: model.library.videos.first?.lastPathComponent ?? ""))
+                }
+            case .sun, .appearance:
+                LabeledContent {
+                    wallpaperPicker(Binding(get: { scheduler.dayWallpaper }, set: { scheduler.dayWallpaper = $0 }))
+                } label: {
+                    label(scheduler.mode == .sun ? "Daytime" : "Light mode", info: scheduler.mode == .sun ? "Shown from sunrise to sunset." : "Shown while macOS is in Light appearance.")
+                }
+                LabeledContent {
+                    wallpaperPicker(Binding(get: { scheduler.nightWallpaper }, set: { scheduler.nightWallpaper = $0 }))
+                } label: {
+                    label(scheduler.mode == .sun ? "Night" : "Dark mode", info: scheduler.mode == .sun ? "Shown from sunset to sunrise." : "Shown while macOS is in Dark appearance.")
+                }
+                if scheduler.mode == .sun { sunLocation }
+            }
+        }
+    }
+
+    @ViewBuilder private var sunLocation: some View {
+        HStack {
+            label("Location", sunSummary,
+                  info: "Sunrise and sunset depend on where you are. Use My Location asks macOS once for your approximate position (rounded to about a kilometre and kept only on this Mac), or type a latitude and longitude.")
+            Spacer()
+            TextField("Latitude", value: Binding(get: { scheduler.latitude }, set: { scheduler.latitude = $0 }), format: .number.precision(.fractionLength(0...2)))
+                .frame(width: 80).textFieldStyle(.roundedBorder)
+            TextField("Longitude", value: Binding(get: { scheduler.longitude }, set: { scheduler.longitude = $0 }), format: .number.precision(.fractionLength(0...2)))
+                .frame(width: 90).textFieldStyle(.roundedBorder)
+            Button("Use My Location") { scheduler.useCurrentLocation() }
+        }
+        if let message = scheduler.locationMessage {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var sunSummary: String {
+        guard let lat = scheduler.latitude, let lon = scheduler.longitude else { return "Not set yet — daytime wallpaper is used until it is." }
+        guard let sun = Scheduler.sunTimes(on: .now, latitude: lat, longitude: lon) else { return "No sunrise or sunset today at this latitude." }
+        return "Today: sunrise \(sun.sunrise.formatted(date: .omitted, time: .shortened)), sunset \(sun.sunset.formatted(date: .omitted, time: .shortened))."
+    }
+
+    private func wallpaperPicker(_ selection: Binding<String>) -> some View {
+        Picker("Wallpaper", selection: selection) {
+            Text("Choose…").tag("")
+            ForEach(model.library.videos, id: \.self) { Text($0.deletingPathExtension().lastPathComponent).tag($0.lastPathComponent) }
+        }
+        .labelsHidden().frame(maxWidth: 220)
+    }
+
     private var rotation: some View {
         Section {
-            Picker(selection: bind(\.rotationMinutes)) {
+            if scheduler.isActive {
+                Text("Paused while a schedule is on.").font(.caption).foregroundStyle(.secondary)
+            }
+                        Picker(selection: bind(\.rotationMinutes)) {
                 Text("Never").tag(0)
                 Text("Every 15 minutes").tag(15)
                 Text("Every 30 minutes").tag(30)

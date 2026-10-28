@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     let library = Library()
     let prefs = Prefs.shared
     let updater = Updater()
+    let scheduler = Scheduler()
     /// Called after settings change (the menu bar icon follows the setting).
     var onPrefsChanged: (() -> Void)?
     private var prefsObserver: AnyCancellable?
@@ -128,10 +129,14 @@ final class AppModel: ObservableObject {
         buildWindows()
         prefsObserver = prefs.objectWillChange.receive(on: RunLoop.main).sink { [unowned self] _ in applyPrefs() }
         updater.onChange = { [unowned self] in objectWillChange.send() }
+        scheduler.onApply = { [unowned self] name in
+            if let url = library.videos.first(where: { $0.lastPathComponent == name }), url != current { select(url) }
+        }
         updater.canInstallNow = { [unowned self] in
             library.converting == nil && !studio.isBusy && editor == nil && scanner == nil && modelDownload == nil
         }
         applyPrefs()
+        scheduler.refresh()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [unowned self] _ in
             MainActor.assumeIsolated { buildWindows() }
         }
@@ -531,7 +536,8 @@ final class AppModel: ObservableObject {
             rotationTimer = nil
             if prefs.rotationMinutes > 0 {
                 rotationTimer = Timer.scheduledTimer(withTimeInterval: Double(prefs.rotationMinutes) * 60, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.nextWallpaper() }
+                    // A schedule decides the wallpaper while it's on.
+                    MainActor.assumeIsolated { if self?.scheduler.isActive == false { self?.nextWallpaper() } }
                 }
             }
         }
