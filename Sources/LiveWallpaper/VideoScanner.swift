@@ -199,7 +199,7 @@ private struct ScanRow: View {
             badge
         }
         .padding(8)
-        .background(candidate.selected ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .background(candidate.selected ? Color.appAccent.opacity(0.1) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture(perform: toggle)
         .help(candidate.issues.map(\.text).joined(separator: "\n"))
@@ -228,7 +228,7 @@ private struct ScanRow: View {
         } else if candidate.issues.isEmpty {
             tag("Great fit", .green)
         } else {
-            tag("Good fit", .accentColor)
+            tag("Good fit", .appAccent)
         }
     }
 

@@ -47,6 +47,7 @@ struct SettingsPane: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(prefs.colorTheme == .plain ? .automatic : .hidden)
     }
 
     // MARK: Sections
@@ -199,18 +200,21 @@ struct SettingsPane: View {
             Picker(selection: bind(\.theme)) {
                 ForEach(Theme.allCases, id: \.self) { Text($0.title).tag($0) }
             } label: {
-                label("Theme", info: "Light or Dark for LiveWallpaper's windows, or System to follow macOS. It doesn't change your wallpaper.")
+                label("Light or dark", info: "Light or Dark for LiveWallpaper's windows, or System to follow macOS. It doesn't change your wallpaper.")
             }
             .pickerStyle(.segmented)
-            Picker(selection: bind(\.accent)) {
-                ForEach(Accent.allCases, id: \.self) { accent in
-                    Label { Text(accent.title) } icon: {
-                        Image(systemName: "circle.fill").foregroundStyle(accent.color ?? .accentColor)
-                    }
-                    .tag(accent)
+            VStack(alignment: .leading, spacing: 10) {
+                label("Theme", "A soft gradient behind LiveWallpaper's windows, with a matching highlight colour.",
+                      info: "Colours LiveWallpaper's own window and menu bar panel with a gradient. Plain keeps the standard macOS look. It's drawn once, not animated, so it doesn't use extra battery, and it doesn't change your wallpaper.")
+                ThemePicker(selection: bind(\.colorTheme))
+            }
+            HStack {
+                label("Accent colour", prefs.accent == .system ? "Automatic: \(prefs.colorTheme == .plain ? "your macOS accent colour" : "the \(prefs.colorTheme.title) theme's colour")." : prefs.accent.title + ".",
+                      info: "The highlight colour for selections, buttons and progress bars in LiveWallpaper. Automatic uses the theme's colour, or with the Plain theme the accent colour from System Settings › Appearance.")
+                Spacer()
+                SwatchPicker(options: Accent.allCases, selection: bind(\.accent), title: \.title) { accent in
+                    accent.color.map(AnyShapeStyle.init) ?? AnyShapeStyle(AngularGradient(colors: [.red, .orange, .yellow, .green, .blue, .purple, .pink, .red], center: .center))
                 }
-            } label: {
-                label("Accent colour", info: "The highlight colour for selections, buttons and progress bars in LiveWallpaper. System uses the accent colour from System Settings › Appearance.")
             }
             Picker(selection: bind(\.menuBarIcon)) {
                 ForEach(MenuBarIcon.allCases, id: \.self) { icon in

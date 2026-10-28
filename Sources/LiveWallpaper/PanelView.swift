@@ -22,7 +22,8 @@ struct PanelView: View {
         }
         .padding(16)
         .frame(width: 340)
-        .tint(model.prefs.accent.color)
+        .background { ThemeBackground(theme: model.prefs.colorTheme) }
+        .tint(model.prefs.tint)
     }
 
     private func name(_ url: URL?) -> String? { url?.deletingPathExtension().lastPathComponent }
@@ -317,7 +318,7 @@ struct WallpaperTile: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isHome ? Color.accentColor : Color.primary.opacity(0.1), lineWidth: isHome ? 2.5 : 1)
+                    .strokeBorder(isHome ? Color.appAccent : Color.primary.opacity(0.1), lineWidth: isHome ? 2.5 : 1)
             )
             .contentShape(Rectangle())
     }
@@ -334,7 +335,7 @@ struct NoticeCard: View {
         switch notice.kind {
         case .error: .red
         case .warning: .orange
-        case .info: .accentColor
+        case .info: .appAccent
         }
     }
     private var symbol: String {

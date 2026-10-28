@@ -50,6 +50,7 @@ final class Prefs: ObservableObject {
     // Appearance
     var theme: Theme { get { get("theme", Theme.system) } set { set("theme", newValue) } }
     var accent: Accent { get { get("accent", Accent.system) } set { set("accent", newValue) } }
+    var colorTheme: ColorTheme { get { get("colorTheme", ColorTheme.plain) } set { set("colorTheme", newValue) } }
     var menuBarIcon: MenuBarIcon { get { get("menuBarIcon", MenuBarIcon.playRectangle) } set { set("menuBarIcon", newValue) } }
     var tileSize: TileSize { get { get("tileSize", TileSize.medium) } set { set("tileSize", newValue) } }
     var showPreviews: Bool { get { get("showPreviews", true) } set { set("showPreviews", newValue) } }
@@ -82,7 +83,7 @@ final class Prefs: ObservableObject {
     /// Puts every setting back to its default (wallpapers, edits and models are kept).
     func resetAll() {
         let keys = ["pauseOnBattery", "pauseBelowBattery", "displays", "dimming", "rotationMinutes", "rotationOrder", "rotationFavoritesOnly", "librarySort",
-                    "theme", "accent", "menuBarIcon", "tileSize", "showPreviews", "showShortcutHints", "openWindowAtLaunch",
+                    "theme", "colorTheme", "accent", "menuBarIcon", "tileSize", "showPreviews", "showShortcutHints", "openWindowAtLaunch",
                     "confirmRemove", "importLimit", "youTubeQuality", "autoUpscale", "showImportTips", "upscaleTile",
                     "upscaleFullPrecision", "upscaleQuality", "upscaleFolder", "memoryRefreshSeconds", "autoCheckUpdates",
                     "autoInstallUpdates", "updateIntervalHours"]
@@ -128,7 +129,7 @@ enum Theme: String, CaseIterable, PrefValue {
 
 enum Accent: String, CaseIterable, PrefValue {
     case system, blue, purple, pink, red, orange, yellow, green, graphite
-    var title: String { self == .system ? "System" : rawValue.capitalized }
+    var title: String { self == .system ? "Automatic" : rawValue.capitalized }
     var color: Color? {
         switch self {
         case .system: nil

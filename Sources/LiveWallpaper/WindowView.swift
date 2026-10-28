@@ -14,13 +14,14 @@ struct WindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
+        .background { ThemeBackground(theme: model.prefs.colorTheme) }
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 1), value: model.tab)
         .overlay { if model.isDropTargeted { DropOverlay(tab: model.tab).transition(dropTransition) } }
         .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1), value: model.isDropTargeted)
         .navigationTitle(model.tab.rawValue)
         .toolbar { toolbar }
         .frame(minWidth: 860, minHeight: 580)
-        .tint(model.prefs.accent.color)
+        .tint(model.prefs.tint)
         .sheet(isPresented: Binding(get: { model.editor != nil }, set: { if !$0 { model.closeEditor(save: false) } })) {
             if let editor = model.editor {
                 EditorView(
@@ -411,7 +412,7 @@ private struct DropOverlay: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                .strokeBorder(Color.appAccent, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                 .padding(12)
         )
         .allowsHitTesting(false)

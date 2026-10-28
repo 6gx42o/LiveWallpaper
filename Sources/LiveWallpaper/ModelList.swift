@@ -126,7 +126,7 @@ struct ModelList: View {
             }
         }
         .padding(compact ? 8 : 10)
-        .background(isSelected ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .background(isSelected ? Color.appAccent.opacity(0.1) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         // Greyed out when this Mac can't handle it; the reason stays readable.
         .saturation(availability.canRun ? 1 : 0)
         .opacity(availability.canRun ? 1 : 0.55)
