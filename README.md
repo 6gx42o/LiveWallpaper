@@ -118,7 +118,10 @@ Converted videos live in `~/Library/Application Support/LiveWallpaper/Videos/`.
 
 ## About the lock screen
 
-macOS doesn't let apps draw on the lock screen — only Apple's own aerial wallpapers animate there. What it does show is your desktop picture, so LiveWallpaper saves a full-quality still of the frame you choose (framed like your wallpaper) and sets it as the desktop picture; on the home screen the video covers it. Your original picture is remembered and put back when you remove the lock screen wallpaper.
+The Lock Screen card has two modes:
+
+- **Still** (default): macOS doesn't let apps draw on the lock screen, but it shows your desktop picture there. LiveWallpaper saves a full-quality still of the frame you choose (framed like your wallpaper) and sets it as the desktop picture; on the home screen the video covers it. Your original picture is put back when you remove the lock screen wallpaper.
+- **Moving**: the only video macOS plays on the lock screen is its own aerial wallpapers. So choose an aerial as your wallpaper in System Settings › Wallpaper (New York is usually already downloaded), and LiveWallpaper swaps that aerial's video file (in `/Library/Application Support/com.apple.idleassetsd/Customer/`) for your wallpaper, trimmed and with its look. macOS asks for your password because it's a system folder. Apple's original is copied to `~/Library/Application Support/LiveWallpaper/LockScreen` first and put back when you switch to Still or click Restore Mine. If you also use that aerial as your screen saver, the screen saver shows your video too. A macOS update may restore Apple's video; set the lock screen again afterwards.
 
 ## How pausing works
 
@@ -164,6 +167,7 @@ Sources/LiveWallpaper/
   AnimatedImage.swift    GIF / animated WebP / image → video (ImageIO)
   WebImport.swift        link downloads and YouTube (yt-dlp) with progress
   TransferProgress.swift size / time-left progress model and card
+  LiveLockScreen.swift   moving lock screen: swaps the chosen Apple aerial's video for yours (admin copy, original kept)
   LockScreen.swift       lock screen still + restoring your own picture
   PlaybackGate.swift     all play/pause decisions
   Library.swift          import → convert (AVFoundation, ffmpeg fallback) → analysis, edits, upscale jobs

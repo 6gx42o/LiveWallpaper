@@ -322,13 +322,23 @@ private struct WallpapersPane: View {
     }
 
     private var lockScreen: some View {
-        ScreenCaption(title: "Lock Screen", detail: name(model.lockScreen) ?? "Your own desktop picture", symbol: "lock.fill",
-                      info: "macOS doesn't let apps play video on the lock screen, so LiveWallpaper sets a full-quality still from a video (pick the frame in the editor) as your desktop picture, which is what the lock screen shows. Restore Mine puts your own picture back.") {
+        ScreenCaption(title: "Lock Screen", detail: name(model.lockScreen).map { $0 + (model.lockScreenMoving ? " · moving" : " · still") } ?? "Your own desktop picture", symbol: "lock.fill",
+                      info: "Still: a full-quality frame from the video (pick it in the editor) becomes your desktop picture, which the lock screen shows. Moving: macOS only plays video on the lock screen for its aerial wallpapers, so choose an aerial in System Settings › Wallpaper and LiveWallpaper swaps its video for yours (it asks for your password; Apple's original is kept and put back when you switch to Still or Restore Mine).") {
             ScreenFrame {
-                if let still = model.lockPreview { Image(nsImage: still).resizable().scaledToFill() }
+                if model.lockScreenMoving, let url = model.lockScreen, let thumbnail = model.library.thumbnails[url] {
+                    Image(nsImage: thumbnail).resizable().scaledToFill()
+                } else if let still = model.lockPreview {
+                    Image(nsImage: still).resizable().scaledToFill()
+                }
             }
             .overlay { LockClock() }
         } accessory: {
+            Picker("Lock screen", selection: Binding(get: { model.lockScreenMoving }, set: { model.lockScreenMoving = $0 })) {
+                Text("Still").tag(false)
+                Text("Moving").tag(true)
+            }
+            .labelsHidden().pickerStyle(.segmented).controlSize(.small).fixedSize()
+            .help("Moving plays the video on the lock screen through an Apple aerial wallpaper")
             if model.lockScreen != nil {
                 Button("Restore Mine") { model.setLockScreen(nil) }
                     .buttonStyle(.link)

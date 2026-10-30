@@ -70,6 +70,12 @@ enum LockScreen {
         log.notice("restored original desktop picture")
     }
 
+    /// Drops the saved pictures and stills (you chose a new wallpaper yourself, so there's nothing to restore).
+    static func forgetOriginals() {
+        UserDefaults.standard.removeObject(forKey: originalsKey)
+        removeStills(except: nil)
+    }
+
     /// Remembers the user's pictures the first time we replace them.
     private static func saveOriginals() {
         guard UserDefaults.standard.dictionary(forKey: originalsKey) == nil else { return }

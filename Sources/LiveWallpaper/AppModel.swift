@@ -160,6 +160,21 @@ final class AppModel: ObservableObject {
     /// What macOS shows on the lock screen: the main display's desktop picture, scaled down.
     var lockPreview: NSImage? = AppModel.loadLockPreview() { didSet { objectWillChange.send() } }
 
+    /// Play the lock screen wallpaper as video (through an Apple aerial) instead of a still frame.
+    var lockScreenMoving: Bool = UserDefaults.standard.bool(forKey: "lockScreenMoving") {
+        didSet {
+            guard lockScreenMoving != oldValue else { return }
+            UserDefaults.standard.set(lockScreenMoving, forKey: "lockScreenMoving")
+            objectWillChange.send()
+            if lockScreenMoving { applyLockScreen() } else {
+                Task {
+                    try? await LiveLockScreen.restore()
+                    applyLockScreen() // back to a still frame
+                }
+            }
+        }
+    }
+
     private static func loadLockPreview() -> NSImage? {
         guard let screen = NSScreen.main, let url = NSWorkspace.shared.desktopImageURL(for: screen),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -246,7 +261,11 @@ final class AppModel: ObservableObject {
     func setLockScreen(_ url: URL?) {
         guard let url else {
             lockScreen = nil
-            LockScreen.restore()
+            if LiveLockScreen.replacedAerial != nil {
+                Task { try? await LiveLockScreen.restore() }
+            } else {
+                LockScreen.restore()
+            }
             lockPreview = Self.loadLockPreview()
             return
         }
@@ -260,8 +279,28 @@ final class AppModel: ObservableObject {
         let edits = library.edits(for: url)
         Task {
             do {
+                if lockScreenMoving {
+                    // The baked copy carries the look and seamless loop; it's already trimmed.
+                    let source = library.playbackSource(for: url)
+                    try await LiveLockScreen.apply(video: source.url, edits: source.edits)
+                    LockScreen.forgetOriginals() // the wallpaper is now the aerial you chose
+                    return
+                }
                 try await LockScreen.apply(video: url, edits: edits)
                 lockPreview = Self.loadLockPreview()
+            } catch LiveLockScreen.Failure.cancelled {
+                return
+            } catch LiveLockScreen.Failure.noAerial {
+                NSApp.activate()
+                let alert = NSAlert()
+                alert.messageText = "Choose an aerial wallpaper first"
+                alert.informativeText = "macOS only plays video on the lock screen for its aerial wallpapers. In System Settings › Wallpaper, pick an aerial as your wallpaper (New York is already on this Mac, so nothing downloads), then click Use as Lock Screen again. LiveWallpaper swaps that aerial's video for yours and keeps Apple's original."
+                alert.addButton(withTitle: "Open Wallpaper Settings")
+                alert.addButton(withTitle: "Cancel")
+                if alert.runModal() == .alertFirstButtonReturn,
+                   let settings = URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension") {
+                    NSWorkspace.shared.open(settings)
+                }
             } catch {
                 log.error("lock screen: \(error.localizedDescription, privacy: .public)")
                 library.post(.init(title: "Couldn't set the lock screen wallpaper",
